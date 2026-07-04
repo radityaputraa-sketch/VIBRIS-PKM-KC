@@ -59,12 +59,23 @@ void loop() {
                     Scheduler_GetLatestBandEnergies(currentBands);
                     addBandEnergyCalibrationSample(currentBands);
 
-                    Serial.printf("[CALIBRATION] Progress: %d/60 sampel tercatat.\n", i + 1);
+                    Serial.printf("[CALIBRATION] %d/60 | Getaran=%.4f Suara=%.2f Arus=%.4f Suhu=%.2f\n",
+                        i + 1, currentSample.rms_getaran, currentSample.rms_suara,
+                        currentSample.arus, currentSample.suhu);
+                } else {
+                    Serial.println(F("[CALIBRATION] Sample dilewati — data sensor stale/belum fresh."));
                 }
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
             computeInitialBaseline(flashMean, flashSigmaInv);
+
+            if (!isLastCalibrationValid()) {
+                Serial.println(F("[SYSTEM] KALIBRASI GAGAL — mesin tidak aktif/variance terlalu rendah. Ulangi dengan motor menyala."));
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                return;  // loop() akan retry dari awal, systemCalibrated tetap false
+            }
+
             saveBaselineToFlash(flashMean, flashSigmaInv);
             computeBandEnergyBaseline(bandBaselineMean, bandBaselineStd);
             saveBandBaselineToFlash(bandBaselineMean, bandBaselineStd);

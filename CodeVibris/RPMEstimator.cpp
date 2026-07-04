@@ -8,7 +8,35 @@
 // bukan representasi RPM asli.
 #define FR_MIN_HZ 5.0
 #define FR_MAX_HZ 50.0
+bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snrOut) {
+    float freqResolution = sampleRate / n;
+    int binMin = (int)(FR_MIN_HZ / freqResolution);
+    int binMax = (int)(FR_MAX_HZ / freqResolution);
 
+    float peakAmp = 0;
+    for (int i = binMin; i <= binMax && i < n / 2; i++) {
+        if (magnitude[i] > peakAmp) peakAmp = magnitude[i];
+    }
+
+    // Noise floor: median-ish estimate pakai rata-rata bin DI LUAR rentang RPM plausible
+    // (bin sangat rendah + sangat tinggi), representasi noise dasar sensor.
+    double noiseSum = 0;
+    int noiseCount = 0;
+    for (int i = 1; i < binMin; i++) { noiseSum += magnitude[i]; noiseCount++; }
+    for (int i = binMax + 1; i < n / 2; i++) { noiseSum += magnitude[i]; noiseCount++; }
+    float noiseFloor = (noiseCount > 0) ? (float)(noiseSum / noiseCount) : 1.0f;
+    if (noiseFloor < 1e-6f) noiseFloor = 1e-6f;
+
+    float snr = peakAmp / noiseFloor;
+    if (snrOut != NULL) *snrOut = snr;
+
+    // Threshold empiris: puncak harus minimal 3x lebih tinggi dari noise floor
+    // supaya dianggap sinyal putaran nyata, bukan kebetulan noise tertinggi.
+    // WAJIB dikalibrasi ulang pakai data motor nyata kalian — angka 3.0 ini
+    // starting point, bukan angka final. Uji: motor mati vs motor nyala,
+    // print SNR keduanya, tentukan threshold yang memisahkan dua kondisi jelas.
+    return snr >= 3.0f;
+}
 float RPM_Estimate(double *magnitude, int n, float sampleRate) {
     // Resolusi frekuensi per bin FFT = sampleRate / jumlah sample.
     // Ini nentuin seberapa presisi kita bisa bedain 1 frekuensi dari frekuensi

@@ -40,7 +40,7 @@ bool addCalibrationSample(SensorFeatures sample);
 void computeInitialBaseline(float meanOutput[4], float sigmaInverseOutput[4][4]);
 void saveBaselineToFlash(float mean[4], float sigmaInverse[4][4]);
 bool loadBaselineFromFlash(float meanOutput[4], float sigmaInverseOutput[4][4]);
-
+bool isLastCalibrationValid();
 bool addBandEnergyCalibrationSample(float bandEnergies[4]);
 void computeBandEnergyBaseline(float meanOutput[4], float stdOutput[4]);
 void saveBandBaselineToFlash(float mean[4], float std[4]);

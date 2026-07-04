@@ -23,7 +23,7 @@ void TaskDriverGetaran(void *pvParameters) {
         }
     }
     lis3dhInstance.setRange(LIS3DH_RANGE_4_G);
-    lis3dhInstance.setDataRate(LIS3DH_DATARATE_400_HZ);
+    lis3dhInstance.setDataRate(LIS3DH_DATARATE_LOWPOWER_5KHZ);  // aktual ~1.25kHz Normal HR mode (bug library #14), tetap 12-bit
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
     const TickType_t xSamplingPeriod = pdMS_TO_TICKS((uint32_t)VIBRATION_SAMPLE_PERIOD_MS);

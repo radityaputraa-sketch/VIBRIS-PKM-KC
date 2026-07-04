@@ -18,7 +18,10 @@ static bool  calibrationActive = false;
 
 static Preferences flashStorage;
 static const char* NVS_NAMESPACE = "baseline";
-
+static bool lastCalibrationValid = false;
+bool isLastCalibrationValid() {
+    return lastCalibrationValid;
+}
 void startCalibrationPhase() {
     calibrationSampleCount = 0;
     calibrationActive = true;
@@ -109,26 +112,20 @@ bool addCalibrationSample(SensorFeatures sample) {
 
 void computeInitialBaseline(float meanOutput[4], float sigmaInverseOutput[4][4]) {
     if (calibrationSampleCount < 2) {
-        // Covariance butuh minimal 2 sample (pembagi N-1). Kalau kurang,
-        // caller salah urutan pemanggilan — beri nilai aman, jangan crash.
         Serial.println(F("[Calibrator] ERROR: sample terlalu sedikit untuk hitung baseline."));
         for (int i = 0; i < 4; i++) meanOutput[i] = 0.0f;
         for (int i = 0; i < 4; i++)
             for (int j = 0; j < 4; j++)
-                sigmaInverseOutput[i][j] = (i == j) ? 1.0f : 0.0f; // identity, netral
+                sigmaInverseOutput[i][j] = (i == j) ? 1.0f : 0.0f;
         return;
     }
 
-    // 1. Hitung mean per fitur
     for (int f = 0; f < 4; f++) {
         double sum = 0.0;
-        for (int i = 0; i < calibrationSampleCount; i++) {
-            sum += calibrationBuffer[i][f];
-        }
+        for (int i = 0; i < calibrationSampleCount; i++) sum += calibrationBuffer[i][f];
         meanOutput[f] = (float)(sum / calibrationSampleCount);
     }
 
-    // 2. Hitung raw covariance (Bessel's correction, N-1)
     float rawCovariance[4][4];
     for (int a = 0; a < 4; a++) {
         for (int b = 0; b < 4; b++) {
@@ -141,11 +138,32 @@ void computeInitialBaseline(float meanOutput[4], float sigmaInverseOutput[4][4])
         }
     }
 
-    // 3. Invers — regularisasi singular matrix sudah ditangani di dalam
-    // solveMatrixInverse4x4() (CovarianceMatrixSolver.cpp), tidak perlu
-    // ditangani ulang di sini.
-    solveMatrixInverse4x4(rawCovariance, sigmaInverseOutput);
+    // GUARD BARU: tolak baseline kalau ada fitur dengan variance mendekati nol.
+    // Ini kondisi fisik "device tidak melihat aktivitas nyata" (motor mati/diam),
+    // bukan cuma masalah numerik — kalibrasi HARUS diulang dengan mesin aktif.
+    const char* featureNames[4] = {"Getaran", "Suara", "Arus", "Suhu"};
+    const float MIN_ACCEPTABLE_VARIANCE = 1e-4f;
+    bool calibrationValid = true;
 
+    for (int f = 0; f < 4; f++) {
+        if (rawCovariance[f][f] < MIN_ACCEPTABLE_VARIANCE) {
+            Serial.printf("[Calibrator] ERROR: variance %s = %.8f, terlalu rendah. "
+                          "Mesin kemungkinan TIDAK AKTIF saat kalibrasi. Kalibrasi DITOLAK.\n",
+                          featureNames[f], rawCovariance[f][f]);
+            calibrationValid = false;
+        }
+    }
+
+    if (!calibrationValid) {
+        // Jangan hasilkan baseline sama sekali — biarkan caller tahu harus ulang.
+        for (int i = 0; i < 4; i++) meanOutput[i] = 0.0f;
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+                sigmaInverseOutput[i][j] = (i == j) ? 1.0f : 0.0f;
+        return;
+    }
+
+    solveMatrixInverse4x4(rawCovariance, sigmaInverseOutput);
     Serial.printf("[Calibrator] Baseline selesai dari %d sample.\n", calibrationSampleCount);
 }
 

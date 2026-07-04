@@ -40,9 +40,42 @@ void FFTProcessor_Process(VibrationBuffer *input, SensorFeatures *features,
     FFT.compute(FFTDirection::Forward);
     FFT.complexToMagnitude();
 
+    // float sumSquare = 0;
+    // for (int i = 0; i < FFT_SAMPLES; i++) sumSquare += input->samples[i] * input->samples[i];
+    // features->rms_getaran = sqrt(sumSquare / FFT_SAMPLES);
+
+    // float fr_rpm = RPM_Estimate(vReal, FFT_SAMPLES, SAMPLE_RATE);
+    // *rpm_out = fr_rpm;
+    // float fr_hz = fr_rpm / 60.0;
+
+    // float freqRes = SAMPLE_RATE / FFT_SAMPLES;
+    // bandEnergies_out[0] = bandEnergy(vReal, freqRes, 0.9f * fr_hz, 1.1f * fr_hz, FFT_SAMPLES);
+    // bandEnergies_out[1] = bandEnergy(vReal, freqRes, 1.9f * fr_hz, 2.1f * fr_hz, FFT_SAMPLES);
+
+    // float bpfo_hz = RPM_ComputeBPFO(fr_hz, 8, 3.5f, 22.0f, 0.0f);
+    // float bpfi_hz = RPM_ComputeBPFI(fr_hz, 8, 3.5f, 22.0f, 0.0f);
+
+    // bandEnergies_out[2] = bandEnergy(vReal, freqRes, 0.9f * bpfo_hz, 1.1f * bpfo_hz, FFT_SAMPLES);
+    // bandEnergies_out[3] = bandEnergy(vReal, freqRes, 0.9f * bpfi_hz, 1.1f * bpfi_hz, FFT_SAMPLES);
+
+    // features->valid = true;
+
+    
     float sumSquare = 0;
     for (int i = 0; i < FFT_SAMPLES; i++) sumSquare += input->samples[i] * input->samples[i];
     features->rms_getaran = sqrt(sumSquare / FFT_SAMPLES);
+
+    float snr = 0.0f;
+    bool reliable = RPM_IsSignalReliable(vReal, FFT_SAMPLES, SAMPLE_RATE, &snr);
+
+    if (!reliable) {
+        // Tidak ada mesin berputar terdeteksi — jangan hasilkan RPM/band energy palsu.
+        *rpm_out = 0.0f;
+        for (int i = 0; i < 4; i++) bandEnergies_out[i] = 0.0f;
+        features->valid = false;   // penting: ini yang mencegah sample masuk kalibrasi
+        Serial.printf("[FFT] SNR=%.2f terlalu rendah, sinyal putaran tidak terdeteksi.\n", snr);
+        return;
+    }
 
     float fr_rpm = RPM_Estimate(vReal, FFT_SAMPLES, SAMPLE_RATE);
     *rpm_out = fr_rpm;
@@ -54,9 +87,9 @@ void FFTProcessor_Process(VibrationBuffer *input, SensorFeatures *features,
 
     float bpfo_hz = RPM_ComputeBPFO(fr_hz, 8, 3.5f, 22.0f, 0.0f);
     float bpfi_hz = RPM_ComputeBPFI(fr_hz, 8, 3.5f, 22.0f, 0.0f);
-
     bandEnergies_out[2] = bandEnergy(vReal, freqRes, 0.9f * bpfo_hz, 1.1f * bpfo_hz, FFT_SAMPLES);
     bandEnergies_out[3] = bandEnergy(vReal, freqRes, 0.9f * bpfi_hz, 1.1f * bpfi_hz, FFT_SAMPLES);
 
     features->valid = true;
+
 }
