@@ -1,134 +1,105 @@
 import sys
-import random
-from PyQt5.QtWidgets import *
+import json
+import serial
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QHBoxLayout
 from PyQt5.QtCore import QTimer
 import pyqtgraph as pg
 
 class Dashboard(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DETEKSI DINI MESIN ROTASI V1.0")
-        # ukuran layar TFT Raspberry Pi 3.5" = 480x320
-        self.setGeometry(0, 0, 480, 320)
-        self.setStyleSheet("background-color: #cfcfcf;")
 
-        # Layout utama
-        self.main_layout = QHBoxLayout()
-        self.setLayout(self.main_layout)
+        self.setWindowTitle("VIBRIS Dashboard")
+        self.setGeometry(100, 100, 1000, 600)
 
-        # LEFT (Graph)
-        self.left_layout = QGridLayout()
-        self.main_layout.addLayout(self.left_layout, 2)
+        try:
+            self.ser = serial.Serial('/dev/ttyUSB0', 115200, timeout=1)
+            print("[INFO] Serial connected")
+        except:
+            self.ser = None
+            print("[WARNING] Serial NOT connected")
 
-        # RIGHT (Info Panel)
-        self.right_layout = QVBoxLayout()
-        self.main_layout.addLayout(self.right_layout, 1)
+        self.data_vib = [0]*50
+        self.data_sound = [0]*50
+        self.data_temp = [0]*50
+        self.data_current = [0]*50
 
-        # MENU BUTTONS
-        btn_layout = QGridLayout()
-        self.btn_rec = QPushButton("Recording & Saves")
-        self.btn_raw = QPushButton("Raw Reading")
-        self.btn_proc = QPushButton("Processed Reading")
-        self.btn_sum = QPushButton("Summary")
+        main_layout = QVBoxLayout()
+        self.setLayout(main_layout)
 
-        # ukuran tombol lebih kecil biar muat
-        for btn in [self.btn_rec, self.btn_raw, self.btn_proc, self.btn_sum]:
-            btn.setFixedHeight(30)
-            btn.setStyleSheet("font-size:10px;")
+        self.status_label = QLabel("STATUS: -")
+        self.status_label.setStyleSheet("font-size: 20px; font-weight: bold;")
+        main_layout.addWidget(self.status_label)
 
-        self.btn_rec.setStyleSheet("background-color: orange; font-weight:bold; font-size:10px;")
-        for btn in [self.btn_raw, self.btn_proc, self.btn_sum]:
-            btn.setStyleSheet("background-color: #4a6fa5; color: white; font-size:10px;")
+        graph_layout = QHBoxLayout()
+        main_layout.addLayout(graph_layout)
 
-        buttons = [self.btn_rec, self.btn_raw, self.btn_proc, self.btn_sum]
-        for i, btn in enumerate(buttons):
-            btn_layout.addWidget(btn, i // 2, i % 2)
+        self.plot_vib = pg.PlotWidget(title="Vibration")
+        self.curve_vib = self.plot_vib.plot(self.data_vib)
 
-        self.right_layout.addLayout(btn_layout)
+        self.plot_sound = pg.PlotWidget(title="Sound")
+        self.curve_sound = self.plot_sound.plot(self.data_sound)
 
-        # Connect
-        self.btn_rec.clicked.connect(self.show_recording)
-        self.btn_raw.clicked.connect(self.show_raw)
-        self.btn_proc.clicked.connect(self.show_processed)
-        self.btn_sum.clicked.connect(self.show_summary)
+        self.plot_temp = pg.PlotWidget(title="Temperature")
+        self.curve_temp = self.plot_temp.plot(self.data_temp)
 
-        # Data dummy
-        self.data = [0]*50
+        self.plot_current = pg.PlotWidget(title="Current")
+        self.curve_current = self.plot_current.plot(self.data_current)
+
+        graph_layout.addWidget(self.plot_vib)
+        graph_layout.addWidget(self.plot_sound)
+        graph_layout.addWidget(self.plot_temp)
+        graph_layout.addWidget(self.plot_current)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_data)
         self.timer.start(200)
 
-        self.show_recording()
-
-    def clear_left_panel(self):
-        for i in reversed(range(self.left_layout.count())):
-            widget = self.left_layout.itemAt(i).widget()
-            if widget: widget.deleteLater()
-
-    def clear_right_panel(self):
-        for i in reversed(range(self.right_layout.count())):
-            item = self.right_layout.itemAt(i)
-            if item and item.layout() is None:
-                widget = item.widget()
-                if widget: widget.deleteLater()
-
     def update_data(self):
-        self.data = self.data[1:] + [random.randint(0, 100)]
-        for i in range(self.left_layout.count()):
-            widget = self.left_layout.itemAt(i).widget()
-            if isinstance(widget, pg.PlotWidget):
-                curves = widget.listDataItems()
-                if curves: curves[0].setData(self.data)
+        if self.ser is None:
+            return
 
-    # ===== MENU PAGES =====
-    def show_recording(self):
-        self.clear_left_panel(); self.clear_right_panel()
-        controls = QHBoxLayout()
-        for txt in ["Start","Pause","●"]:
-            b = QPushButton(txt); b.setFixedSize(60,25); controls.addWidget(b)
-        self.right_layout.addLayout(controls)
-        saves = QLabel("Save 1 : Electric Fan\nSave 2 : Servo Motor\nSave 3 : Drill\nSave 4 : Blender\nSave 5 : Empty\nSave 6 : Empty")
-        saves.setStyleSheet("font-size:10px;")
-        self.right_layout.addWidget(saves)
+        try:
+            line = self.ser.readline().decode().strip()
 
-    def show_raw(self):
-        self.clear_left_panel(); self.clear_right_panel()
-        titles = ["Vibration","Sound","Temperature","Current"]
-        for i in range(4):
-            g = pg.PlotWidget(); g.setBackground('w'); g.setTitle(titles[i],color='b',size='10pt')
-            g.plot(pen='r'); self.left_layout.addWidget(g,i//2,i%2)
-        self.right_layout.addWidget(QLabel("[Raw Reading]\nData sensor mentah realtime"))
+            if not line.startswith("{"):
+                return
 
-    def show_processed(self):
-        self.clear_left_panel(); self.clear_right_panel()
-        g1 = pg.PlotWidget(); g1.setBackground('w'); g1.setTitle("Vibration (Cur vs Norm)",color='b',size='10pt')
-        g1.plot([random.randint(0,50) for _ in range(50)],pen='r'); g1.plot([25]*50,pen='g')
-        self.left_layout.addWidget(g1,0,0)
-        g2 = pg.PlotWidget(); g2.setBackground('w'); g2.setTitle("Sound (Cur vs Norm)",color='b',size='10pt')
-        g2.plot([random.randint(40,70) for _ in range(50)],pen='r'); g2.plot([55]*50,pen='g')
-        self.left_layout.addWidget(g2,0,1)
-        temp = round(random.uniform(80,130),1); curr = 0.02
-        lbl = QLabel(f"Temperature : {temp} °C\nCurrent : {curr:.2f} A")
-        lbl.setStyleSheet("font-size:10px; font-weight:bold;")
-        self.right_layout.addWidget(lbl)
+            data = json.loads(line)
 
-    def show_summary(self):
-        self.clear_left_panel(); self.clear_right_panel()
+            vib = data.get("getaran", 0)
+            sound = data.get("suara", 0)
+            temp = data.get("suhu", 0)
+            current = data.get("arus", 0)
+            status = data.get("status", "UNKNOWN")
 
-        def make_bar(name, level, value, color):
-            bar = QProgressBar()
-            bar.setRange(0,100)
-            bar.setValue(value)
-            bar.setStyleSheet(f"QProgressBar::chunk {{background-color:{color};}} font-size:10px;")
-            bar.setFormat(f"{name} : {level}")
-            return bar
+            self.data_vib = self.data_vib[1:] + [vib]
+            self.data_sound = self.data_sound[1:] + [sound]
+            self.data_temp = self.data_temp[1:] + [temp]
+            self.data_current = self.data_current[1:] + [current]
 
-        self.right_layout.addWidget(make_bar("Vibration","Moderate",70,"yellow"))
-        self.right_layout.addWidget(make_bar("Sound","Minor",60,"lightblue"))
-        self.right_layout.addWidget(make_bar("Temperature","Extreme",95,"red"))
-        self.right_layout.addWidget(make_bar("Current","Normal",50,"lightgreen"))
+            self.curve_vib.setData(self.data_vib)
+            self.curve_sound.setData(self.data_sound)
+            self.curve_temp.setData(self.data_temp)
+            self.curve_current.setData(self.data_current)
 
-if __name__=="__main__":
-    app=QApplication(sys.argv)
-    win=Dashboard(); win.show()
+            self.status_label.setText(f"STATUS: {status}")
+
+            if status == "NORMAL":
+                self.status_label.setStyleSheet("color: green; font-size: 20px;")
+            elif status == "WARNING":
+                self.status_label.setStyleSheet("color: orange; font-size: 20px;")
+            elif status == "DANGER":
+                self.status_label.setStyleSheet("color: red; font-size: 20px;")
+            else:
+                self.status_label.setStyleSheet("color: white; font-size: 20px;")
+
+        except Exception as e:
+            print("[ERROR]", e)
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = Dashboard()
+    window.show()
     sys.exit(app.exec_())
