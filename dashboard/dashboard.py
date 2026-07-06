@@ -17,7 +17,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 import pyqtgraph as pg
 
-# ===================== KONFIGURASI OPERASIONAL =====================
+# ===================== KONFIGURASI OPERASIONAL DETEKSI =====================
+# PENTING: Ubah 'COM5' sesuai dengan port USB tempat ESP32 tercolok di laptop Anda
 SERIAL_PORT = 'COM5'  
 BAUD_RATE = 115200
 BUFFER_LEN = 100
@@ -40,9 +41,9 @@ STATUS_COLOR = {"Normal": COL_OK, "Waspada": COL_WARN, "Bahaya": COL_BAD}
 class Dashboard(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VIBRIS Sistem Pemantauan")
+        self.setWindowTitle("VIBRIS Perangkat Pintar")
         
-        # Kunci dimensi mutlak panel LCD TFT 480 x 320
+        # Mengunci dimensi mutlak panel LCD TFT 480 x 320
         self.setFixedSize(480, 320)
         self.setStyleSheet(f"background-color: {COL_BG_MAIN};")
 
@@ -56,11 +57,11 @@ class Dashboard(QWidget):
         self.csv_writer = None
         self.csv_filename = None
 
-        # Penampung Data Hasil Parsing Serial JSON Sensor
+        # State Data Hasil Parsing JSON Transmitter ESP32
         self.latest = {"rms_v": 0, "rms_a": 0, "cur": 0, "temp": 0,
                         "rpm": 0, "d2": 0, "status": "UNKNOWN"}
 
-        # Buffer Data Deret Waktu untuk Grafik Tren Sinyal Mentah
+        # Buffer Data Deret Waktu untuk Grafik Tren Sinyal Mentah (100 Titik)
         self.data_vib = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
         self.data_sound = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
         self.data_temp = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
@@ -71,7 +72,7 @@ class Dashboard(QWidget):
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 
-        # 1. BLOK ATAS: HEADER BAR (Kiri: Dropdown AC | Kanan: Jam & Indikator Core)
+        # 1. BLOK ATAS: HEADER BAR
         root.addWidget(self._build_header())
 
         # 2. BLOK TENGAH: AREA KERJA UTAMA (Split Horizontal Konten & Info Kanan)
@@ -89,10 +90,10 @@ class Dashboard(QWidget):
         # 3. BLOK BAWAH: BOX MODE BOTTOM NAVIGATION BAR
         root.addWidget(self._build_bottom_navigation())
 
-        # ===================== SISTEM TIMER & ENGINE =====================
+        # ===================== SISTEM TIMER & ENGINE KONEKSI =====================
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_all)
-        self.timer.start(200)
+        self.timer.start(50)  # Interval 50ms menjamin pembacaan buffer serial sangat responsif
 
         self.clock_timer = QTimer()
         self.clock_timer.timeout.connect(self._update_clock)
@@ -100,15 +101,20 @@ class Dashboard(QWidget):
         self._update_clock()
 
         self.ser = None
+        self.init_serial()
+
+        # Buka Halaman Pertama Secara Default (Raw Reading)
+        self.set_mode(0)
+
+    def init_serial(self):
         if serial is not None:
             try:
-                self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
-            except Exception:
-                pass
+                # Membuka koneksi COM dengan port laptop, timeout dibuat pendek agar UI responsif
+                self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.05)
+                print(f"[INFO] Sukses mendengarkan port serial: {SERIAL_PORT}")
+            except Exception as e:
+                print(f"[WARNING] Gagal membuka port {SERIAL_PORT}: {e}")
         self._set_connection_indicator(self.ser is not None)
-
-        # Buka Halaman Pertama Secara Default (Sesuai Urutan Baru: Raw Reading)
-        self.set_mode(0)
 
     def _build_header(self):
         header = QFrame()
@@ -116,7 +122,7 @@ class Dashboard(QWidget):
         h = QHBoxLayout(header)
         h.setContentsMargins(6, 2, 6, 2)
 
-        # KIRI ATAS: Dropdown Adaptif Pemilihan Jenis Beban Motor Listrik AC
+        # KIRI ATAS: Dropdown Adaptif Pemilihan Alat Listrik AC Dinamis
         self.machine_combo = QComboBox()
         self.machine_combo.addItems([
             "Pilih Mesin AC...", 
@@ -130,7 +136,7 @@ class Dashboard(QWidget):
         
         h.addStretch()
 
-        # KANAN ATAS: Status Waktu Sistem & Lampu Indikator Jalur Serial Hardware
+        # KANAN ATAS: Penunjuk Waktu dan Status Koneksi Inti Hardware VIBRIS
         self.clock_label = QLabel("--:--:--")
         self.clock_label.setStyleSheet(f"color: {COL_TEXT_LIGHT}; font-size: 9px; font-family: Arial;")
         h.addWidget(self.clock_label)
@@ -151,7 +157,7 @@ class Dashboard(QWidget):
         stack = QStackedWidget()
         stack.setStyleSheet(f"background-color: {COL_PANEL}; border-radius: 4px;")
         
-        # URUTAN DIKOREKSI: Raw Reading (0), Logs & Saves (1), Processed (2), Summary (3)
+        # Menyesuaikan urutan halaman dengan benar: Raw -> Logs & Saves -> Processed -> Summary
         stack.addWidget(self._page_raw())         
         stack.addWidget(self._page_recording())   
         stack.addWidget(self._page_processed())   
@@ -211,7 +217,6 @@ class Dashboard(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
-        # Data Indikator Utama
         self.proc_rpm_big = QLabel("RPM: --")
         self.proc_rpm_big.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {COL_TEXT_DARK}; font-family: Arial;")
         self.proc_rpm_big.setAlignment(Qt.AlignCenter)
@@ -222,13 +227,12 @@ class Dashboard(QWidget):
         self.proc_d2_big.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.proc_d2_big)
 
-        # MODIFIKASI: Menambahkan Progress Bar sebagai Indikator Deviasi Statistik HMI agar layar tidak sepi
         lbl_bar = QLabel("Penyimpangan Sinyal Kedekatan Baseline:")
         lbl_bar.setStyleSheet("font-size: 8px; color: #333; font-weight: bold; font-family: Arial;")
         layout.addWidget(lbl_bar)
 
         self.d2_progress = QProgressBar()
-        self.d2_progress.setMaximum(20) # Nilai maksimum skala Mahalanobis batas kritis anomali
+        self.d2_progress.setMaximum(20) 
         self.d2_progress.setStyleSheet("""
             QProgressBar {
                 border: 1px solid #777;
@@ -280,7 +284,7 @@ class Dashboard(QWidget):
         self.machine_side_title.setStyleSheet(f"font-size: 10px; font-weight: bold; color: {COL_TEXT_DARK}; font-family: Arial;")
         pl.addWidget(self.machine_side_title)
 
-        # Susunan Teks Presisi Monospace agar Karakter Rapi Sejajar secara Vertikal
+        # Menggunakan Font Monospace untuk merapikan baris desimal data sensor digital
         self.values_label = QLabel("Vib  : 0.0000\nSnd  : 0.0\nAmp  : 0.0000\nTemp : 0.0\nRPM  : 0.0\nD2   : 0.00")
         self.values_label.setStyleSheet(f"font-size: 10px; color: {COL_TEXT_DARK}; font-family: 'Consolas', monospace;")
         pl.addWidget(self.values_label)
@@ -301,7 +305,6 @@ class Dashboard(QWidget):
         nav.setSpacing(4)
 
         self.mode_buttons = []
-        # Mengatur susunan nama tombol navigasi bawah agar sinkron dengan stacked widget baru
         labels = ["Raw Reading", "Logs & Saves", "Processed", "Summary"]
         for i, label in enumerate(labels):
             btn = QPushButton(label)
@@ -315,7 +318,6 @@ class Dashboard(QWidget):
         self.left_stack.setCurrentIndex(index)
         self._highlight_active_button(index)
 
-        # Alur Sinkronisasi Deskripsi Kanan
         if index == 0:
             self._render_raw_desc()
         elif index == 1:
@@ -373,20 +375,35 @@ class Dashboard(QWidget):
             self.conn_dot.setStyleSheet(f"color: {COL_BAD}; font-size: 12px;")
             self.conn_text.setText("OFFLINE")
 
+    # ==================== RECEIVER JALUR SERIAL UART LAPTOP ====================
     def update_all(self):
-        if self.ser is None:
+        # Coba buka ulang port pasif jika kabel terputus/sempat lepas
+        if self.ser is None or not self.ser.is_open:
+            self._set_connection_indicator(False)
+            if serial is not None:
+                try:
+                    self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
+                except Exception:
+                    return
             return
+
         try:
             if self.ser.in_waiting > 0:
                 line = self.ser.readline().decode(errors='ignore').strip()
-                if not line.startswith("{"): return
+                
+                # Pengaman parsing: data string UART wajib berupa objek JSON valid
+                if not (line.startswith("{") and line.endswith("}")): 
+                    return
+                
                 data = json.loads(line)
                 self._set_connection_indicator(True)
             else:
                 return
         except Exception:
+            self._set_connection_indicator(False)
             return
 
+        # Ambil data dari key dictionary (disesuaikan penuh dengan variabel pengiriman firmware Anda)
         self.latest = {
             "rms_v": data.get("rms_v", 0), "rms_a": data.get("rms_a", 0),
             "cur": data.get("cur", 0), "temp": data.get("temp", 0),
@@ -394,18 +411,17 @@ class Dashboard(QWidget):
             "status": data.get("status", "UNKNOWN")
         }
 
-        # Mengisi data buffer grafik
+        # Mengisi buffer ring untuk pyqtgraph real-time tren
         self.data_vib.append(self.latest["rms_v"])
         self.data_sound.append(self.latest["rms_a"])
         self.data_temp.append(self.latest["temp"])
         self.data_current.append(self.latest["cur"])
 
-        # Update Plot Kurva Real-Time
         buffers = [self.data_vib, self.data_sound, self.data_temp, self.data_current]
         for (graph, curve), buf in zip(self.graphs, buffers):
             curve.setData(list(buf))
 
-        # Update Info Panel Kanan (Monospace)
+        # Sinkronisasi parameter digital samping kanan
         self.values_label.setText(
             f"Vib  : {self.latest['rms_v']:.4f}\n"
             f"Snd  : {self.latest['rms_a']:.1f}\n"
@@ -415,14 +431,12 @@ class Dashboard(QWidget):
             f"D2   : {self.latest['d2']:.2f}"
         )
 
-        # Update Komponen Halaman Aktif Dinamis
         active = self.left_stack.currentIndex()
         if active == 0:
             self._render_raw_desc()
         elif active == 2:
             self.proc_rpm_big.setText(f"RPM: {self.latest['rpm']:.1f}")
             self.proc_d2_big.setText(f"Mahalanobis D²: {self.latest['d2']:.2f}")
-            # Mengisi nilai progress bar Mahalanobis
             val_progress = int(clamp(self.latest['d2'], 0, 20))
             self.d2_progress.setValue(val_progress)
         elif active == 3:
@@ -432,6 +446,7 @@ class Dashboard(QWidget):
             self.sum_status_big.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {color}; font-family: Arial;")
             self.sum_detail.setText(f"Analisis: {self.selected_machine}\nNilai D2 terhitung: {self.latest['d2']:.2f}.\nKesimpulan Akhir: [{status}].")
 
+        # Perekaman data otomatis jika tombol rekam aktif
         if self.recording and self.csv_writer:
             self.csv_writer.writerow([
                 datetime.now().isoformat(), self.selected_machine,
@@ -442,7 +457,7 @@ class Dashboard(QWidget):
 
     def toggle_recording(self):
         if not self.recording:
-            # Sesuai Diskusi Arsitektur HMI: Sistem Penamaan Berkas Otomatis Menggunakan Adaptif Stempel
+            # Menggunakan penamaan otomatis dengan stempel waktu adaptif agar operator UMKM tidak perlu mengetik
             clean_name = self.selected_machine.replace(" ", "").replace("-", "")
             filename = os.path.join(LOG_DIR, f"{clean_name}_{datetime.now().strftime('%m%d_%H%M%S')}.csv")
             
