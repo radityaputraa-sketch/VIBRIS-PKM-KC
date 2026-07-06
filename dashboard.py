@@ -8,7 +8,10 @@ class Dashboard(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Deteksi Dini Mesin Rotasi")
-        self.setFixedSize(480, 320)
+        
+        # ===== PENGATURAN LAYAR DEDICATED TFT RASPBERRY PI =====
+        # Menghilangkan window frame (close, maximize, minimize) & membuat window selalu di depan
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("background-color: #1a1c1e; color: white;")
 
         root = QVBoxLayout(self)
@@ -57,7 +60,9 @@ class Dashboard(QWidget):
         self.csv_writer = None
         self.csv_filename = None
 
+        # ===== INITIALIZE DISPLAY =====
         self.set_mode(0)
+        self.showFullScreen() # Memaksa aplikasi memenuhi seluruh resolusi layar TFT
 
     # ===== PAGES =====
     def _page_raw(self):
@@ -199,6 +204,12 @@ class Dashboard(QWidget):
             df = df.dropna()
             df.plot(x="timestamp", y=["rms_v","rms_a","cur","temp","rpm","d2"])
             plt.show()
+
+    # ===== EXIT SHORTCUT FOR TESTING =====
+    def keyPressEvent(self, event):
+        # Tekan tombol 'Esc' di keyboard untuk keluar dari aplikasi fullscreen
+        if event.key() == Qt.Key_Escape:
+            self.close()
 
     def closeEvent(self, event):
         if self.csv_file:
