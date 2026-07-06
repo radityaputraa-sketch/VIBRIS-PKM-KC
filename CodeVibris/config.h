@@ -14,7 +14,9 @@
 #define PIN_INM_I2S_WS      17  // I2S Word Select / Left-Right Clock
 #define PIN_INM_I2S_SCK     18  // I2S Continuous Serial Clock
 // Sensor Suhu (DS18H / DS18B20) - Connected to OneWire Bus
-#define PIN_DS18B20_DATA    5   // OneWire Digital I/O
+//#define PIN_DS18B20_DATA    5   // OneWire Digital I/O
+#define PIN_MLX_SCL         8   // I2C Clock GY-906 (MLX90614)
+#define PIN_MLX_SDA         3   // I2C Data GY-906 (MLX90614)
 // ===================================================================
 // 2. FREERTOS TASK ARCHITECTURE (CORES, PRIORITIES, & STACKS)
 // ===================================================================
