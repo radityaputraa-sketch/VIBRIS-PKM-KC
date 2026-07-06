@@ -12,30 +12,27 @@ except ImportError:
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout,
-    QGridLayout, QStackedWidget, QFrame, QListWidget
+    QGridLayout, QStackedWidget, QFrame, QListWidget, QComboBox, QProgressBar
 )
 from PyQt5.QtCore import Qt, QTimer
 import pyqtgraph as pg
 
-# ===================== KONFIGURASI =====================
-SERIAL_PORT = 'COM5'      # ganti sesuai Device Manager / /dev/ttyUSB0
+# ===================== KONFIGURASI OPERASIONAL =====================
+SERIAL_PORT = 'COM5'  
 BAUD_RATE = 115200
-BUFFER_LEN = 50           # Dikurangi dari 100 ke 50 agar grafik lebih rapat & jelas di layar kecil
+BUFFER_LEN = 100
 LOG_DIR = "logs"
-MACHINE_LABEL = "Electric Fan"
 
-# ===================== PALET WARNA HMI =====================
-COL_BG_MAIN = "#1a1c1e"      # Dibuat lebih gelap agar kontras LCD TFT lebih tajam
-COL_PANEL = "#2d3135"        # Panel mode gelap agar teks terang menonjol
-COL_PANEL_DARK = "#111315"   # Header & Sidebar gelap pekat
-COL_ACCENT = "#007acc"       # Biru industri terang untuk indikator touch aktif
-COL_ACCENT_HOVER = "#0098ff"
-COL_TEXT_LIGHT = "#ffffff"
-COL_TEXT_MUTED = "#aaaaaa"
+# ===================== PALET WARNA INDUSTRI VIBRIS =====================
+COL_BG_MAIN = "#2d3135"      
+COL_PANEL = "#cfcfcf"        
+COL_PANEL_DARK = "#1c1e22"   
+COL_ACCENT = "#2a6f97"       
+COL_TEXT_LIGHT = "#f2f2f2"
 COL_TEXT_DARK = "#1c1c1c"
-COL_OK = "#28a745"
-COL_WARN = "#ffc107"
-COL_BAD = "#dc3545"
+COL_OK = "#2e7d32"
+COL_WARN = "#e08e00"
+COL_BAD = "#c62828"
 
 STATUS_COLOR = {"Normal": COL_OK, "Waspada": COL_WARN, "Bahaya": COL_BAD}
 
@@ -43,56 +40,56 @@ STATUS_COLOR = {"Normal": COL_OK, "Waspada": COL_WARN, "Bahaya": COL_BAD}
 class Dashboard(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HMI - Condition Monitoring")
+        self.setWindowTitle("VIBRIS Sistem Pemantauan")
         
-        # Kunci ukuran mutlak agar PAS & tidak terpotong di layar TFT 480x320
+        # Kunci dimensi mutlak panel LCD TFT 480 x 320
         self.setFixedSize(480, 320)
-        self.setStyleSheet(f"background-color: {COL_BG_MAIN}; color: {COL_TEXT_LIGHT};")
+        self.setStyleSheet(f"background-color: {COL_BG_MAIN};")
 
         os.makedirs(LOG_DIR, exist_ok=True)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)  # Margin dipersempit agar memaksimalkan ruang layar
-        root.setSpacing(4)
-
-        # ================= HEADER BAR =================
-        root.addWidget(self._build_header())
-
-        # ================= MAIN BODY Layout =================
-        # Layout diubah: Stack konten di ATAS, Menu Navigasi di BAWAH agar mudah disentuh jempol
-        self.left_stack = self._build_left_stack()
-        root.addWidget(self.left_stack, 1)
-
-        root.addWidget(self._build_bottom_navigation())
-
-        # ===== BUFFER DATA GRAFIK =====
-        self.data_vib = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
-        self.data_sound = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
-        self.data_temp = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
-        self.data_current = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
-
-        # ===== STATE TERBARU =====
-        self.latest = {"rms_v": 0, "rms_a": 0, "cur": 0, "temp": 0,
-                        "rpm": 0, "d2": 0, "status": "UNKNOWN"}
-
-        # ===== RECORDING =====
+        # State Kendali Dinamis Alat
+        self.selected_machine = "Belum Pilih Mesin"
+        self.debug_mode = False
         self.recording = False
         self.csv_file = None
         self.csv_writer = None
         self.csv_filename = None
 
-        # ===== SERIAL =====
-        self.ser = None
-        if serial is not None:
-            try:
-                self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
-                print("[INFO] Serial connected")
-            except Exception as e:
-                print(f"[WARNING] Serial gagal: {e}")
-        
-        self._set_connection_indicator(self.ser is not None)
+        # Penampung Data Hasil Parsing Serial JSON Sensor
+        self.latest = {"rms_v": 0, "rms_a": 0, "cur": 0, "temp": 0,
+                        "rpm": 0, "d2": 0, "status": "UNKNOWN"}
 
-        # ===== TIMERS =====
+        # Buffer Data Deret Waktu untuk Grafik Tren Sinyal Mentah
+        self.data_vib = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
+        self.data_sound = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
+        self.data_temp = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
+        self.data_current = deque([0] * BUFFER_LEN, maxlen=BUFFER_LEN)
+
+        # Inisialisasi Tata Letak Utama (Vertikal Master Grid)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        # 1. BLOK ATAS: HEADER BAR (Kiri: Dropdown AC | Kanan: Jam & Indikator Core)
+        root.addWidget(self._build_header())
+
+        # 2. BLOK TENGAH: AREA KERJA UTAMA (Split Horizontal Konten & Info Kanan)
+        body_layout = QHBoxLayout()
+        body_layout.setSpacing(4)
+
+        self.left_stack = self._build_left_stack()
+        body_layout.addWidget(self.left_stack, 3)
+
+        self.right_panel = self._build_right_info_panel()
+        body_layout.addWidget(self.right_panel, 2)
+
+        root.addLayout(body_layout)
+
+        # 3. BLOK BAWAH: BOX MODE BOTTOM NAVIGATION BAR
+        root.addWidget(self._build_bottom_navigation())
+
+        # ===================== SISTEM TIMER & ENGINE =====================
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_all)
         self.timer.start(200)
@@ -102,35 +99,50 @@ class Dashboard(QWidget):
         self.clock_timer.start(1000)
         self._update_clock()
 
-        # Tampilkan mode default
+        self.ser = None
+        if serial is not None:
+            try:
+                self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.1)
+            except Exception:
+                pass
+        self._set_connection_indicator(self.ser is not None)
+
+        # Buka Halaman Pertama Secara Default (Sesuai Urutan Baru: Raw Reading)
         self.set_mode(0)
 
-    # ================================================================
-    #  BAGIAN PEMBANGUN UI (DIOPTIMALKAN UNTUK 480x320)
-    # ================================================================
     def _build_header(self):
         header = QFrame()
-        header.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border-radius: 4px; max-height: 28px;")
+        header.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border-radius: 4px; max-height: 30px;")
         h = QHBoxLayout(header)
-        h.setContentsMargins(8, 2, 8, 2)
+        h.setContentsMargins(6, 2, 6, 2)
 
-        title = QLabel(f"VIBRIS HMI | {MACHINE_LABEL}")
-        title.setStyleSheet(f"color: {COL_TEXT_LIGHT}; font-size: 11px; font-weight: bold;")
-        h.addWidget(title)
+        # KIRI ATAS: Dropdown Adaptif Pemilihan Jenis Beban Motor Listrik AC
+        self.machine_combo = QComboBox()
+        self.machine_combo.addItems([
+            "Pilih Mesin AC...", 
+            "Motor Induksi - Pompa Air", 
+            "Blower Industri - UMKM", 
+            "Kompresor - Produksi"
+        ])
+        self.machine_combo.setStyleSheet("background-color: #3a3f44; color: white; font-size: 10px; max-width: 150px;")
+        self.machine_combo.currentIndexChanged.connect(self._machine_changed)
+        h.addWidget(self.machine_combo)
+        
         h.addStretch()
 
+        # KANAN ATAS: Status Waktu Sistem & Lampu Indikator Jalur Serial Hardware
         self.clock_label = QLabel("--:--:--")
-        self.clock_label.setStyleSheet(f"color: {COL_TEXT_MUTED}; font-size: 10px;")
+        self.clock_label.setStyleSheet(f"color: {COL_TEXT_LIGHT}; font-size: 9px; font-family: Arial;")
         h.addWidget(self.clock_label)
 
-        h.addSpacing(10)
+        h.addSpacing(6)
 
         self.conn_dot = QLabel("●")
         self.conn_dot.setStyleSheet(f"color: {COL_BAD}; font-size: 12px;")
         h.addWidget(self.conn_dot)
         
         self.conn_text = QLabel("OFFLINE")
-        self.conn_text.setStyleSheet(f"color: {COL_TEXT_LIGHT}; font-size: 10px; font-weight: bold;")
+        self.conn_text.setStyleSheet(f"color: {COL_TEXT_LIGHT}; font-size: 9px; font-weight: bold; font-family: Arial;")
         h.addWidget(self.conn_text)
 
         return header
@@ -138,31 +150,29 @@ class Dashboard(QWidget):
     def _build_left_stack(self):
         stack = QStackedWidget()
         stack.setStyleSheet(f"background-color: {COL_PANEL}; border-radius: 4px;")
-        stack.addWidget(self._page_raw())         # index 0
-        stack.addWidget(self._page_recording())   # index 1
-        stack.addWidget(self._page_processed())   # index 2
-        stack.addWidget(self._page_summary())     # index 3
+        
+        # URUTAN DIKOREKSI: Raw Reading (0), Logs & Saves (1), Processed (2), Summary (3)
+        stack.addWidget(self._page_raw())         
+        stack.addWidget(self._page_recording())   
+        stack.addWidget(self._page_processed())   
+        stack.addWidget(self._page_summary())     
         return stack
 
     def _page_raw(self):
         page = QWidget()
         grid = QGridLayout(page)
-        grid.setContentsMargins(4, 4, 4, 4)
-        grid.setSpacing(4)
+        grid.setContentsMargins(2, 2, 2, 2)
+        grid.setSpacing(2)
         self.graphs = []
-        
-        titles = ["Vibration (m/s²)", "Sound", "Temp (°C)", "Current (A)"]
+        titles = ["Vibration", "Sound", "Temp", "Current"]
         pens = ['r', 'y', '#ff8c00', 'c']
-        
         for i in range(4):
             graph = pg.PlotWidget()
-            graph.setBackground('#000000')
-            # Sembunyikan label sumbu untuk menghemat space yang sangat sempit di TFT 320p
+            graph.setBackground('k')
             graph.getAxis('left').setStyle(showValues=False)
             graph.getAxis('bottom').setStyle(showValues=False)
-            graph.setTitle(titles[i], color="#ffffff", size="8pt")
+            graph.setTitle(titles[i], color=COL_TEXT_DARK, size="7pt")
             graph.showGrid(x=True, y=True, alpha=0.2)
-            
             curve = graph.plot(pen=pg.mkPen(pens[i], width=1.5))
             self.graphs.append((graph, curve))
             grid.addWidget(graph, i // 2, i % 2)
@@ -170,183 +180,198 @@ class Dashboard(QWidget):
 
     def _page_recording(self):
         page = QWidget()
-        layout = QHBoxLayout(page)  # Menggunakan split horizontal agar pas di rasio 480x320
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(8)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
 
-        left_side = QVBoxLayout()
-        rec_title = QLabel("RECORDING LOGS")
-        rec_title.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_TEXT_LIGHT};")
-        left_side.addWidget(rec_title)
+        self.debug_btn = QPushButton("Opsi Debug Logger: OFF")
+        self.debug_btn.setStyleSheet("background-color: #54595e; color: white; font-size: 9px; min-height: 20px; font-family: Arial;")
+        self.debug_btn.clicked.connect(self._toggle_debug_mode)
+        layout.addWidget(self.debug_btn)
 
-        self.rec_status_label = QLabel("● IDLE")
-        self.rec_status_label.setStyleSheet(f"font-size: 10px; font-weight: bold; color: {COL_BAD};")
-        left_side.addWidget(self.rec_status_label)
-
-        self.rec_toggle_btn = QPushButton("START RECORD")
-        self.rec_toggle_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COL_ACCENT}; color: white; font-weight: bold;
-                padding: 8px; font-size: 11px; border-radius: 4px; min-height: 35px;
-            }}
-            QPushButton:hover {{ background-color: {COL_ACCENT_HOVER}; }}
-        """)
+        self.rec_toggle_btn = QPushButton("MULAI RECORDING")
+        self.rec_toggle_btn.setVisible(False)  
+        self.rec_toggle_btn.setStyleSheet(f"background-color: {COL_ACCENT}; color: white; font-weight: bold; font-size: 10px; min-height: 25px; font-family: Arial;")
         self.rec_toggle_btn.clicked.connect(self.toggle_recording)
-        left_side.addWidget(self.rec_toggle_btn)
-        left_side.addStretch()
-        
-        layout.addLayout(left_side, 1)
+        layout.addWidget(self.rec_toggle_btn)
 
-        right_side = QVBoxLayout()
-        right_side.addWidget(QLabel("History Files:", styleSheet="font-size: 10px; color: #ccc;"))
+        self.rec_status_label = QLabel("● Sistem Standby")
+        self.rec_status_label.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_BAD}; font-family: Arial;")
+        layout.addWidget(self.rec_status_label)
+
         self.rec_list = QListWidget()
-        self.rec_list.setStyleSheet(f"background-color: #1a1c1e; color: white; font-size: 9px; border-radius: 4px;")
-        right_side.addWidget(self.rec_list)
-        
-        layout.addLayout(right_side, 1)
+        self.rec_list.setStyleSheet("background-color: white; color: black; font-size: 8px;")
+        layout.addWidget(self.rec_list)
         self._refresh_log_list()
         return page
 
     def _page_processed(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignCenter)
+        layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
-        header = QLabel("STATISTICAL SELF-BASELINE ( TinyML )")
-        header.setStyleSheet(f"font-size: 11px; font-weight: bold; color: {COL_TEXT_MUTED};")
-        header.setAlignment(Qt.AlignCenter)
-        layout.addWidget(header)
-
-        # Panel Nilai Utama dibuat besar dan sangat kontras
+        # Data Indikator Utama
         self.proc_rpm_big = QLabel("RPM: --")
-        self.proc_rpm_big.setStyleSheet(f"font-size: 28px; font-weight: bold; color: #00aaff;")
+        self.proc_rpm_big.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {COL_TEXT_DARK}; font-family: Arial;")
         self.proc_rpm_big.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.proc_rpm_big)
 
-        self.proc_d2_big = QLabel("D²: --")
-        self.proc_d2_big.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {COL_TEXT_LIGHT};")
+        self.proc_d2_big = QLabel("Mahalanobis D²: --")
+        self.proc_d2_big.setStyleSheet(f"font-size: 16px; color: {COL_TEXT_DARK}; font-weight: bold; font-family: Arial;")
         self.proc_d2_big.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.proc_d2_big)
 
-        self.proc_threshold = QLabel("Limit Normal D² < 9.49  |  Bahaya > 13.28")
-        self.proc_threshold.setStyleSheet("font-size: 10px; color: #ffaa00;")
-        self.proc_threshold.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.proc_threshold)
+        # MODIFIKASI: Menambahkan Progress Bar sebagai Indikator Deviasi Statistik HMI agar layar tidak sepi
+        lbl_bar = QLabel("Penyimpangan Sinyal Kedekatan Baseline:")
+        lbl_bar.setStyleSheet("font-size: 8px; color: #333; font-weight: bold; font-family: Arial;")
+        layout.addWidget(lbl_bar)
 
+        self.d2_progress = QProgressBar()
+        self.d2_progress.setMaximum(20) # Nilai maksimum skala Mahalanobis batas kritis anomali
+        self.d2_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #777;
+                background-color: #f0f0f0;
+                border-radius: 3px;
+                text-align: center;
+                max-height: 15px;
+                font-size: 8px;
+                color: black;
+            }
+            QProgressBar::chunk {
+                background-color: #2a6f97;
+                width: 4px;
+            }
+        """)
+        layout.addWidget(self.d2_progress)
+
+        lbl_limit = QLabel("Ambang Batas Normal < 9.49  |  Bahaya > 13.28")
+        lbl_limit.setStyleSheet("font-size: 8px; color: #555; font-family: Arial;")
+        lbl_limit.setAlignment(Qt.AlignCenter)
+        layout.addWidget(lbl_limit)
         return page
 
     def _page_summary(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(12, 12, 12, 12)
         layout.setAlignment(Qt.AlignCenter)
 
-        self.sum_status_big = QLabel("STATUS: UNKNOWN")
-        self.sum_status_big.setStyleSheet("font-size: 26px; font-weight: bold; color: white;")
+        self.sum_status_big = QLabel("STATUS: --")
+        self.sum_status_big.setStyleSheet("font-size: 24px; font-weight: bold; color: black; font-family: Arial;")
         self.sum_status_big.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.sum_status_big)
 
-        self.sum_detail = QLabel("Menunggu sinkronisasi data sensor...")
-        self.sum_detail.setStyleSheet(f"font-size: 11px; color: {COL_TEXT_LIGHT};")
+        self.sum_detail = QLabel("Silakan pilih target beban mesin AC pada menu kiri atas untuk mengaktifkan analisis kesehatan.")
+        self.sum_detail.setStyleSheet(f"font-size: 9px; color: {COL_TEXT_DARK}; font-family: Arial;")
         self.sum_detail.setAlignment(Qt.AlignCenter)
         self.sum_detail.setWordWrap(True)
         layout.addWidget(self.sum_detail)
-
         return page
 
+    def _build_right_info_panel(self):
+        panel = QFrame()
+        panel.setStyleSheet(f"background-color: {COL_PANEL}; border-radius: 4px; border: 1px solid #b5b5b5;")
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(4, 4, 4, 4)
+        pl.setSpacing(2)
+
+        self.machine_side_title = QLabel("Target: Belum Pilih")
+        self.machine_side_title.setStyleSheet(f"font-size: 10px; font-weight: bold; color: {COL_TEXT_DARK}; font-family: Arial;")
+        pl.addWidget(self.machine_side_title)
+
+        # Susunan Teks Presisi Monospace agar Karakter Rapi Sejajar secara Vertikal
+        self.values_label = QLabel("Vib  : 0.0000\nSnd  : 0.0\nAmp  : 0.0000\nTemp : 0.0\nRPM  : 0.0\nD2   : 0.00")
+        self.values_label.setStyleSheet(f"font-size: 10px; color: {COL_TEXT_DARK}; font-family: 'Consolas', monospace;")
+        pl.addWidget(self.values_label)
+
+        self.content_desc = QLabel("Inisialisasi Sistem...")
+        self.content_desc.setWordWrap(True)
+        self.content_desc.setStyleSheet(f"font-size: 9px; color: #444; font-family: Arial;")
+        pl.addWidget(self.content_desc)
+        
+        pl.addStretch()
+        return panel
+
     def _build_bottom_navigation(self):
-        # Dipindah ke bagian bawah (Bottom Bar Layout) untuk menyesuaikan rasio layar lebar 3:2 TFT
         nav_frame = QFrame()
-        nav_frame.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border-radius: 4px; max-height: 55px;")
+        nav_frame.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border-radius: 4px; max-height: 45px;")
         nav = QHBoxLayout(nav_frame)
         nav.setContentsMargins(4, 4, 4, 4)
         nav.setSpacing(4)
 
         self.mode_buttons = []
-        labels = ["Raw\nPlot", "Log\nRecord", "Process\nTinyML", "System\nSummary"]
-        
+        # Mengatur susunan nama tombol navigasi bawah agar sinkron dengan stacked widget baru
+        labels = ["Raw Reading", "Logs & Saves", "Processed", "Summary"]
         for i, label in enumerate(labels):
             btn = QPushButton(label)
-            # Dibuat tinggi minimum 45px agar finger-friendly di layar sentuh resistif 3.5"
-            btn.setMinimumHeight(45) 
+            btn.setMinimumHeight(35)  
             btn.clicked.connect(lambda _, idx=i: self.set_mode(idx))
             nav.addWidget(btn)
             self.mode_buttons.append(btn)
-
         return nav_frame
 
-    # ================================================================
-    #  NAVIGASI & HIGHLIGHT TOMBOL INTERAKTIF
-    # ================================================================
     def set_mode(self, index):
         self.left_stack.setCurrentIndex(index)
         self._highlight_active_button(index)
 
+        # Alur Sinkronisasi Deskripsi Kanan
         if index == 0:
-            self._render_raw()
+            self._render_raw_desc()
         elif index == 1:
             self._refresh_log_list()
+            self.content_desc.setText("Menggunakan auto-naming tersemat untuk menyimpan data komparasi baseline normal.")
         elif index == 2:
-            self._render_processed()
+            self.content_desc.setText("Hasil inferensi komputasi estimasi rotasi RPM serta indeks penyimpangan grafik matriks.")
         elif index == 3:
-            self._render_summary()
+            self.content_desc.setText("Status diagnosis akhir otomatis kondisi kesehatan komponen bearing atau beban motor AC.")
 
     def _highlight_active_button(self, active_index):
         for i, btn in enumerate(self.mode_buttons):
             if i == active_index:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: {COL_ACCENT};
-                        color: white; font-size: 10px; font-weight: bold;
-                        border: 2px solid #00aaff; border-radius: 4px;
-                    }}
-                """)
+                btn.setStyleSheet(f"background-color: {COL_ACCENT}; color: white; font-size: 9px; font-weight: bold; border: 1.5px solid white; border-radius: 3px; font-family: Arial;")
             else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background-color: #3a3f44; color: {COL_TEXT_LIGHT};
-                        font-size: 10px; border: 1px solid #54595e; border-radius: 4px;
-                    }}
-                """)
+                btn.setStyleSheet(f"background-color: #54595e; color: {COL_TEXT_LIGHT}; font-size: 9px; border-radius: 3px; font-family: Arial;")
 
-    def _render_raw(self):
-        pass
-
-    def _render_processed(self):
-        self.proc_rpm_big.setText(f"RPM: {self.latest['rpm']:.1f}")
-        self.proc_d2_big.setText(f"D²: {self.latest['d2']:.2f}")
-
-    def _render_summary(self):
-        status = self.latest['status']
-        color = STATUS_COLOR.get(status, COL_TEXT_LIGHT)
-        self.sum_status_big.setText(f"STATUS: {status}")
-        self.sum_status_big.setStyleSheet(f"font-size: 26px; font-weight: bold; color: {color};")
-        
-        if status == "Normal":
-            self.sum_detail.setText(f"Mesin stabil pada {self.latest['rpm']:.1f} RPM.\nJarak Mahalanobis D² aman ({self.latest['d2']:.2f}).")
-        elif status == "Waspada":
-            self.sum_detail.setText(f"Deteksi deviasi awal! D² meningkat ke {self.latest['d2']:.2f}.\nPeriksa komponen bearing segera.")
-        elif status == "Bahaya":
-            self.sum_detail.setText(f"ANOMALI KRITIS! D² = {self.latest['d2']:.2f}.\nMatikan mesin untuk mencegah kerusakan fatal.")
+    def _machine_changed(self, index):
+        if index == 0:
+            self.selected_machine = "Belum Pilih Mesin"
         else:
-            self.sum_detail.setText(f"Menghubungkan ke core analitik mesin...")
+            self.selected_machine = self.machine_combo.currentText()
+        
+        self.machine_side_title.setText(f"Target: {self.selected_machine}")
+        self.set_mode(self.left_stack.currentIndex())
 
-    # ================================================================
-    #  SERIAL DATA PARSING
-    # ================================================================
+    def _toggle_debug_mode(self):
+        self.debug_mode = not self.debug_mode
+        if self.debug_mode:
+            self.debug_btn.setText("Opsi Debug Logger: ON")
+            self.debug_btn.setStyleSheet("background-color: #2e7d32; color: white; font-size: 9px; font-family: Arial;")
+            self.rec_toggle_btn.setVisible(True)
+        else:
+            self.debug_btn.setText("Opsi Debug Logger: OFF")
+            self.debug_btn.setStyleSheet("background-color: #54595e; color: white; font-size: 9px; font-family: Arial;")
+            self.rec_toggle_btn.setVisible(False)
+            if self.recording: self.toggle_recording()
+
+    def _render_raw_desc(self):
+        self.content_desc.setText(
+            f"Keluaran Instan:\n"
+            f"Vib: {self.latest['rms_v']:.4f}\n"
+            f"Snd: {self.latest['rms_a']:.1f}\n"
+            f"Amp: {self.latest['cur']:.4f}"
+        )
+
+    def _update_clock(self):
+        self.clock_label.setText(datetime.now().strftime("%H:%M:%S"))
+
     def _set_connection_indicator(self, connected):
         if connected:
             self.conn_dot.setStyleSheet(f"color: {COL_OK}; font-size: 12px;")
             self.conn_text.setText("ONLINE")
-            self.conn_text.setStyleSheet(f"color: {COL_OK}; font-size: 10px; font-weight: bold;")
         else:
             self.conn_dot.setStyleSheet(f"color: {COL_BAD}; font-size: 12px;")
             self.conn_text.setText("OFFLINE")
-            self.conn_text.setStyleSheet(f"color: {COL_BAD}; font-size: 10px; font-weight: bold;")
-
-    def _update_clock(self):
-        self.clock_label.setText(datetime.now().strftime("%H:%M:%S"))
 
     def update_all(self):
         if self.ser is None:
@@ -354,97 +379,106 @@ class Dashboard(QWidget):
         try:
             if self.ser.in_waiting > 0:
                 line = self.ser.readline().decode(errors='ignore').strip()
-                if not line.startswith("{"):
-                    return
+                if not line.startswith("{"): return
                 data = json.loads(line)
                 self._set_connection_indicator(True)
             else:
                 return
-        except Exception as e:
+        except Exception:
             return
 
         self.latest = {
-            "rms_v": data.get("rms_v", 0),
-            "rms_a": data.get("rms_a", 0),
-            "cur": data.get("cur", 0),
-            "temp": data.get("temp", 0),
-            "rpm": data.get("rpm", 0),
-            "d2": data.get("d2", 0),
-            "status": data.get("status", "UNKNOWN"),
+            "rms_v": data.get("rms_v", 0), "rms_a": data.get("rms_a", 0),
+            "cur": data.get("cur", 0), "temp": data.get("temp", 0),
+            "rpm": data.get("rpm", 0), "d2": data.get("d2", 0),
+            "status": data.get("status", "UNKNOWN")
         }
 
+        # Mengisi data buffer grafik
         self.data_vib.append(self.latest["rms_v"])
         self.data_sound.append(self.latest["rms_a"])
         self.data_temp.append(self.latest["temp"])
         self.data_current.append(self.latest["cur"])
 
+        # Update Plot Kurva Real-Time
         buffers = [self.data_vib, self.data_sound, self.data_temp, self.data_current]
         for (graph, curve), buf in zip(self.graphs, buffers):
             curve.setData(list(buf))
 
-        # Refresh halaman aktif real-time
+        # Update Info Panel Kanan (Monospace)
+        self.values_label.setText(
+            f"Vib  : {self.latest['rms_v']:.4f}\n"
+            f"Snd  : {self.latest['rms_a']:.1f}\n"
+            f"Amp  : {self.latest['cur']:.4f}\n"
+            f"Temp : {self.latest['temp']:.1f}\n"
+            f"RPM  : {self.latest['rpm']:.1f}\n"
+            f"D2   : {self.latest['d2']:.2f}"
+        )
+
+        # Update Komponen Halaman Aktif Dinamis
         active = self.left_stack.currentIndex()
-        if active == 2:
-            self._render_processed()
+        if active == 0:
+            self._render_raw_desc()
+        elif active == 2:
+            self.proc_rpm_big.setText(f"RPM: {self.latest['rpm']:.1f}")
+            self.proc_d2_big.setText(f"Mahalanobis D²: {self.latest['d2']:.2f}")
+            # Mengisi nilai progress bar Mahalanobis
+            val_progress = int(clamp(self.latest['d2'], 0, 20))
+            self.d2_progress.setValue(val_progress)
         elif active == 3:
-            self._render_summary()
+            status = self.latest['status']
+            color = STATUS_COLOR.get(status, COL_TEXT_DARK)
+            self.sum_status_big.setText(f"STATUS: {status}")
+            self.sum_status_big.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {color}; font-family: Arial;")
+            self.sum_detail.setText(f"Analisis: {self.selected_machine}\nNilai D2 terhitung: {self.latest['d2']:.2f}.\nKesimpulan Akhir: [{status}].")
 
         if self.recording and self.csv_writer:
             self.csv_writer.writerow([
-                datetime.now().isoformat(),
+                datetime.now().isoformat(), self.selected_machine,
                 self.latest["rms_v"], self.latest["rms_a"], self.latest["cur"],
-                self.latest["temp"], self.latest["rpm"], self.latest["d2"],
-                self.latest["status"]
+                self.latest["temp"], self.latest["rpm"], self.latest["d2"], self.latest["status"]
             ])
             self.csv_file.flush()
 
-    # ================================================================
-    #  LOG LOGGING MANAGEMENT
-    # ================================================================
     def toggle_recording(self):
         if not self.recording:
-            filename = os.path.join(LOG_DIR, f"rec_{datetime.now().strftime('%m%d_%H%M%S')}.csv")
+            # Sesuai Diskusi Arsitektur HMI: Sistem Penamaan Berkas Otomatis Menggunakan Adaptif Stempel
+            clean_name = self.selected_machine.replace(" ", "").replace("-", "")
+            filename = os.path.join(LOG_DIR, f"{clean_name}_{datetime.now().strftime('%m%d_%H%M%S')}.csv")
+            
             self.csv_file = open(filename, 'w', newline='')
             self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(['timestamp', 'rms_v', 'rms_a', 'cur', 'temp', 'rpm', 'd2', 'status'])
+            self.csv_writer.writerow(['timestamp', 'machine', 'rms_v', 'rms_a', 'cur', 'temp', 'rpm', 'd2', 'status'])
             self.csv_filename = filename
             self.recording = True
-            self.rec_status_label.setText(f"● LOGGING...")
-            self.rec_status_label.setStyleSheet(f"font-size:10px; font-weight:bold; color:{COL_OK};")
-            self.rec_toggle_btn.setText("STOP RECORD")
-            self.rec_toggle_btn.setStyleSheet(f"background-color: {COL_BAD}; color: white; font-weight: bold; min-height: 35px; border-radius: 4px;")
+            
+            self.rec_status_label.setText(f"● LOG DATA -> {os.path.basename(filename)}")
+            self.rec_status_label.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_OK}; font-family: Arial;")
+            self.rec_toggle_btn.setText("BERHENTI RECORDING")
         else:
             self.recording = False
-            if self.csv_file:
-                self.csv_file.close()
-            self.rec_status_label.setText(f"● SAVED")
-            self.rec_status_label.setStyleSheet(f"font-size:10px; font-weight:bold; color:{COL_TEXT_MUTED};")
-            self.rec_toggle_btn.setText("START RECORD")
-            self.rec_toggle_btn.setStyleSheet(f"background-color: {COL_ACCENT}; color: white; font-weight: bold; min-height: 35px; border-radius: 4px;")
+            if self.csv_file: self.csv_file.close()
+            self.rec_status_label.setText(f"● Berkas Disimpan Otomatis")
+            self.rec_status_label.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_BAD}; font-family: Arial;")
+            self.rec_toggle_btn.setText("MULAI RECORDING")
             self._refresh_log_list()
 
     def _refresh_log_list(self):
-        if not hasattr(self, "rec_list"):
-            return
+        if not hasattr(self, "rec_list"): return
         self.rec_list.clear()
         if os.path.isdir(LOG_DIR):
             for f in sorted(os.listdir(LOG_DIR), reverse=True):
-                if f.endswith(".csv"):
-                    self.rec_list.addItem(f)
+                if f.endswith(".csv"): self.rec_list.addItem(f)
 
     def closeEvent(self, event):
-        if self.csv_file:
-            self.csv_file.close()
+        if self.csv_file: self.csv_file.close()
         event.accept()
 
+def clamp(n, minn, maxn):
+    return max(min(n, maxn), minn)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # Tips Layar Sentuh LCD TFT Resistif SPI Raspberry Pi:
-    # Buka baris di bawah ini jika ingin menyembunyikan cursor panah mouse saat dijalankan tanpa mouse/keyboard
-    # app.setOverrideCursor(Qt.BlankCursor)
-    
     win = Dashboard()
     win.show()
     sys.exit(app.exec_())
