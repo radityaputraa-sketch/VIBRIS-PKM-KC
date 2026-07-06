@@ -108,12 +108,29 @@ class Dashboard(QWidget):
     def _page_summary(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("Summary"))
+        
+        title = QLabel("Summary")
+        title.setStyleSheet("font-size:12px; font-weight:bold;")
+        layout.addWidget(title)
+        
+        self.sum_labels = {}
+        params = ["Vibration", "Sound", "Temp", "Current"]
+        for p in params:
+            lbl = QLabel(f"{p}: --")
+            lbl.setStyleSheet("font-size:11px; font-weight:bold; background-color:#333; color:white; padding:4px;")
+            layout.addWidget(lbl)
+            self.sum_labels[p] = lbl
+            
         return page
 
     # ===== NAVIGATION =====
     def set_mode(self, idx):
         self.stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self.buttons):
+            if i == idx:
+                btn.setStyleSheet("background-color:#007acc; color:white; font-weight:bold;")
+            else:
+                btn.setStyleSheet("background-color:#3a3f44; color:white;")
 
     # ===== UPDATE =====
     def update_all(self):
@@ -126,8 +143,10 @@ class Dashboard(QWidget):
                 datetime.now().isoformat(),
                 random.uniform(0.01,0.05),
                 random.randint(50,70),
+                random.uniform(0.1,0.5),
                 random.randint(80,120),
-                random.uniform(0.1,0.5)
+                random.randint(1000,1500),
+                random.uniform(0.0,1.0)
             ])
             self.csv_file.flush()
 
@@ -141,12 +160,22 @@ class Dashboard(QWidget):
             self.csv_writer.writerow(['timestamp','rms_v','rms_a','cur','temp','rpm','d2'])
             self.csv_filename = filename
             self.recording = True
+            
             self.rec_status_label.setText("● LOGGING...")
+            self.rec_status_label.setStyleSheet("color:green; font-weight:bold;")
+            
+            self.rec_toggle_btn.setText("STOP RECORD")
+            self.rec_toggle_btn.setStyleSheet("background-color:#ff0000; color:white; font-weight:bold; font-size:12px;")
         else:
             self.recording = False
             if self.csv_file:
                 self.csv_file.close()
+                
             self.rec_status_label.setText("● SAVED")
+            self.rec_status_label.setStyleSheet("color:gray; font-weight:bold;")
+            
+            self.rec_toggle_btn.setText("START RECORD")
+            self.rec_toggle_btn.setStyleSheet("background-color:#007acc; color:white; font-weight:bold; font-size:12px;")
             self._refresh_log_list()
 
     def _refresh_log_list(self):
@@ -163,7 +192,11 @@ class Dashboard(QWidget):
             print("Opening:", filename)  # debug
             import pandas as pd
             import matplotlib.pyplot as plt
-            df = pd.read_csv(filename)
+            df = pd.read_csv("logs/rec_0706_164820.csv")
+            for col in ["rms_v","rms_a","cur","temp","rpm","d2"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna()
             df.plot(x="timestamp", y=["rms_v","rms_a","cur","temp","rpm","d2"])
             plt.show()
 
