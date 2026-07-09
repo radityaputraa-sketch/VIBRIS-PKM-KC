@@ -1,12 +1,15 @@
 import sys
 import os
 import csv
+import json
+import time
 from datetime import datetime
 from collections import deque
 
 # Import Serial & Threading untuk Integrasi Komunikasi Data Hardware ESP32
 try:
     import serial
+    import serial.tools.list_ports
     import threading
 except ImportError:
     serial = None
@@ -20,12 +23,21 @@ from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
 
 # ===================== KONFIGURASI OPERASIONAL =====================
-# Menyesuaikan dengan port USB-Enhanced-SERIAL CH343 laptop kamu yang terdeteksi
-SERIAL_PORT = 'COM6'  
+# Menyesuaikan dengan port USB-Enhanced-SERIAL CH343 laptop kamu yang terdeteksi.
+# Kalau port ini salah/berubah (mis. pindah laptop, ganti kabel USB, atau
+# dipindah ke Raspberry Pi), dashboard akan otomatis MENCARI SENDIRI port
+# yang paling mirip ESP32 (lihat fungsi _resolve_serial_port di bawah),
+# jadi tidak perlu selalu diedit manual.
+SERIAL_PORT = 'COM6'
 BAUD_RATE = 115200
 LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
+
+# Kata kunci deskripsi USB-Serial chip yang umum dipakai board ESP32
+# (CH340/CH343, CP210x, FTDI). Dipakai untuk auto-detect port kalau
+# SERIAL_PORT di atas tidak ditemukan / salah.
+ESP32_USB_HINTS = ["CH340", "CH343", "CP210", "USB-SERIAL", "USB SERIAL", "FTDI", "SILICON LABS"]
 
 # ===================== PALET WARNA INDUSTRI VIBRIS =====================
 COL_BG_MAIN = "#2d3135"      
@@ -297,6 +309,9 @@ class Dashboard(QWidget):
         self.current_a = None
         self.current_cur = None
         self.current_temp = None
+        self.current_rpm = None
+        self.current_d2 = None
+        self.current_status_device = ""
 
         # Status Operasional Recording & Serial Hardware
         self.recording = False
@@ -446,8 +461,11 @@ class Dashboard(QWidget):
         self.lbl_val_a = QLabel("Snd: -- dB")
         self.lbl_val_cur = QLabel("Cur: -- A")
         self.lbl_val_temp = QLabel("Tmp: -- °C")
+        self.lbl_val_rpm = QLabel("RPM: --")
+        self.lbl_val_d2 = QLabel("D²(Mahalanobis): --")
 
-        for lbl in [self.lbl_val_v, self.lbl_val_a, self.lbl_val_cur, self.lbl_val_temp]:
+        for lbl in [self.lbl_val_v, self.lbl_val_a, self.lbl_val_cur, self.lbl_val_temp,
+                    self.lbl_val_rpm, self.lbl_val_d2]:
             lbl.setStyleSheet("font-size: 8px; color: #aaa;")
             fs_lay.addWidget(lbl)
 
@@ -533,8 +551,11 @@ class Dashboard(QWidget):
         self.proc_a = [QLabel("Sound Level"), QLabel("-"), QLabel("45.0 dB")]
         self.proc_c = [QLabel("Current Motor"), QLabel("-"), QLabel("1.20 A")]
         self.proc_t = [QLabel("Suhu Bearing"), QLabel("-"), QLabel("36.5 °C")]
+        self.proc_rpm = [QLabel("Estimasi RPM"), QLabel("-"), QLabel("-")]
+        self.proc_d2 = [QLabel("Mahalanobis D²"), QLabel("-"), QLabel("-")]
 
-        for row, labels in enumerate([self.proc_v, self.proc_a, self.proc_c, self.proc_t], start=1):
+        for row, labels in enumerate([self.proc_v, self.proc_a, self.proc_c, self.proc_t,
+                                       self.proc_rpm, self.proc_d2], start=1):
             for col, lbl in enumerate(labels):
                 lbl.setStyleSheet(f"font-size: 9px; background-color: {COL_PANEL_DARK}; padding: 4px; border-radius: 2px; color: #aaa;")
                 grid.addWidget(lbl, row, col)
@@ -583,47 +604,121 @@ class Dashboard(QWidget):
         else:
             print("Library pyserial tidak terinstal atau tidak terdeteksi pada Python interpreter.")
 
+    def _resolve_serial_port(self):
+        """Cari port serial yang tepat untuk ESP32. Coba SERIAL_PORT dulu,
+        kalau tidak ada di daftar port yang terdeteksi sistem, cari otomatis
+        port dengan deskripsi chip USB-Serial yang umum dipakai board ESP32
+        (CH340/CH343/CP210x/FTDI). Ini supaya dashboard tetap bisa konek
+        walaupun nomor COM/tty berubah-ubah setiap kali kabel dicolok ulang."""
+        try:
+            ports = list(serial.tools.list_ports.comports())
+        except Exception:
+            ports = []
+
+        available = [p.device for p in ports]
+        if SERIAL_PORT in available:
+            return SERIAL_PORT
+
+        for p in ports:
+            desc = f"{p.description} {p.manufacturer or ''}".upper()
+            if any(hint in desc for hint in ESP32_USB_HINTS):
+                return p.device
+
+        # Tidak ketemu kandidat lain -> tetap coba SERIAL_PORT default
+        # (biar pesan error yang muncul jelas menyebut port itu)
+        return SERIAL_PORT
+
     def _read_serial_worker(self):
         while True:
             try:
                 if self.ser is None or not self.ser.is_open:
-                    self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+                    port_to_use = self._resolve_serial_port()
+                    self.ser = serial.Serial(port_to_use, BAUD_RATE, timeout=1)
                     self.serial_connected = True
-                
-                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                if line:
-                    parts = line.split(',')
-                    # Memeriksa keutuhan paket data (Wajib memiliki 4 elemen sensor)
-                    if len(parts) >= 4:
-                        self.current_v = float(parts[0])
-                        self.current_a = float(parts[1])
-                        self.current_cur = float(parts[2])
-                        self.current_temp = float(parts[3])
-                        
-                        # Injeksi data masuk ke dalam antrean buffer internal grafik
-                        self.tick += 1
-                        self.time_buffer.append(self.tick)
-                        self.v_buffer.append(self.current_v)
-                        self.a_buffer.append(self.current_a)
-                        self.cur_buffer.append(self.current_cur)
-                        self.temp_buffer.append(self.current_temp)
 
-                        # Menyimpan data riil ke dalam berkas CSV jika perekaman aktif
-                        if self.recording and self.csv_writer:
-                            self.csv_writer.writerow([
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                self.machine_combo.currentText(),
-                                self.current_v, self.current_a, self.current_cur, self.current_temp
-                            ])
+                raw = self.ser.readline()
+                if not raw:
+                    # Timeout tanpa data baru -> coba lagi, jangan dianggap error
+                    continue
+                line = raw.decode('utf-8', errors='ignore').strip()
+
+                # Firmware ESP32 mencampur baris debug teks biasa dengan baris
+                # data JSON di stream Serial yang sama (lihat komentar di
+                # RaspberryPiDataTransmitter.cpp) -> baris yang bukan JSON dilewati.
+                if not line.startswith("{"):
+                    continue
+
+                try:
+                    data = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    # Baris JSON terpotong (bisa terjadi di baud rate tinggi) -> lewati
+                    continue
+
+                # Format paket sesuai Transmitter_SendResult() di firmware:
+                # {"rms_v":.., "rms_a":.., "cur":.., "temp":.., "rpm":.., "d2":.., "status":".."}
+                self.current_v = float(data.get("rms_v", 0.0))
+                self.current_a = float(data.get("rms_a", 0.0))
+                self.current_cur = float(data.get("cur", 0.0))
+                self.current_temp = float(data.get("temp", 0.0))
+                self.current_rpm = float(data.get("rpm", 0.0))
+                self.current_d2 = float(data.get("d2", 0.0))
+                self.current_status_device = data.get("status", "")
+
+                # Injeksi data masuk ke dalam antrean buffer internal grafik
+                self.tick += 1
+                self.time_buffer.append(self.tick)
+                self.v_buffer.append(self.current_v)
+                self.a_buffer.append(self.current_a)
+                self.cur_buffer.append(self.current_cur)
+                self.temp_buffer.append(self.current_temp)
+
+                # Menyimpan data riil ke dalam berkas CSV jika perekaman aktif
+                if self.recording and self.csv_writer:
+                    self.csv_writer.writerow([
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        self.machine_combo.currentText(),
+                        self.current_v, self.current_a, self.current_cur, self.current_temp,
+                        self.current_rpm, self.current_d2, self.current_status_device
+                    ])
+                    self.csv_file.flush()
             except Exception as e:
                 self.serial_connected = False
                 self.ser = None
                 # Reset data ke kondisi kosong jika kabel USB terputus
                 self.current_v = self.current_a = self.current_cur = self.current_temp = None
+                # Tunggu sebentar sebelum mencoba reconnect lagi, biar tidak
+                # spam percobaan koneksi ratusan kali per detik saat kabel lepas
+                time.sleep(1.5)
 
     # ===================== EVALUASI DIAGNOSA MESIN (DIPAKAI TAB SUMMARY) =====================
-    def _evaluate_diagnosis(self, v, temp):
-        # Evaluasi Kritis Kondisi Mesin (Diagnosa Otomatis di Tab Summary)
+    def _evaluate_diagnosis(self, v, temp, device_status=""):
+        # Kalau firmware ESP32 sudah mengirim label status hasil klasifikasi
+        # Mahalanobis + FFT (lebih akurat, lihat DiagnosisClassifier.cpp),
+        # pakai itu langsung. Threshold v/temp di bawah cuma fallback kalau
+        # firmware belum/tidak mengirim field "status".
+        status_map = {
+            "bahaya": ("STATUS MESIN: BAHAYA (CRITICAL)", COL_BAD,
+                       "Terjadi anomali gesekan parah atau ketiadaan lubrikasi bearing! Segera matikan mesin produksi.",
+                       "● DEVIASI BAHAYA"),
+            "waspada": ("STATUS MESIN: WASPADA (WARNING)", COL_WARN,
+                        "Indikasi awal ketidakseimbangan massa atau degradasi mekanis bearing terdeteksi.",
+                        "● STATUS WASPADA"),
+            "normal": ("STATUS MESIN: NORMAL", COL_OK,
+                       "Seluruh parameter berjalan di bawah ambang batas deviasi krisis karsa cipta. Mesin aman digunakan.",
+                       "● SYSTEM ONLINE"),
+        }
+        key = (device_status or "").strip().lower()
+        if key in status_map:
+            title, color, desc, sys_txt = status_map[key]
+            self.lbl_diag_status.setText(title)
+            self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {color};")
+            self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {color}; border-radius: 6px;")
+            self.lbl_diag_desc.setText(desc)
+            self.lbl_sys_status.setText(sys_txt)
+            self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {color};")
+            return
+
+        # Evaluasi Kritis Kondisi Mesin (Diagnosa Otomatis di Tab Summary) - fallback
         if v > 0.25 or temp > 50.0:
             self.lbl_diag_status.setText("STATUS MESIN: BAHAYA (CRITICAL)")
             self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_BAD};")
@@ -665,16 +760,31 @@ class Dashboard(QWidget):
             self.lbl_val_a.setText(f"Snd: {self.current_a:.1f} dB")
             self.lbl_val_cur.setText(f"Cur: {self.current_cur:.2f} A")
             self.lbl_val_temp.setText(f"Tmp: {self.current_temp:.1f} °C")
+            if self.current_rpm is not None:
+                self.lbl_val_rpm.setText(f"RPM: {self.current_rpm:.0f}")
+            if self.current_d2 is not None:
+                self.lbl_val_d2.setText(f"D²(Mahalanobis): {self.current_d2:.2f}")
 
             # Sinkronisasi teks perbandingan di tab Processed Reading
             self.proc_v[1].setText(f"{self.current_v:.2f} G")
             self.proc_a[1].setText(f"{self.current_a:.1f} dB")
             self.proc_c[1].setText(f"{self.current_cur:.2f} A")
             self.proc_t[1].setText(f"{self.current_temp:.1f} °C")
+            if self.current_rpm is not None:
+                self.proc_rpm[1].setText(f"{self.current_rpm:.0f} rpm")
+            if self.current_d2 is not None:
+                self.proc_d2[1].setText(f"{self.current_d2:.2f}")
             self.lbl_proc_note.setText("* Data diolah melalui Edge Computing terkomparasi Statistical Self-Baseline.")
 
-            # Evaluasi diagnosa otomatis berdasarkan data live
-            self._evaluate_diagnosis(self.current_v, self.current_temp)
+            # Evaluasi diagnosa otomatis. Kalau firmware sudah mengirim status_label
+            # hasil klasifikasi Mahalanobis (Normal/Waspada/Bahaya), itu dipakai
+            # langsung karena lebih akurat daripada re-threshold sederhana di Python.
+            self._evaluate_diagnosis(self.current_v, self.current_temp, self.current_status_device)
+        elif not self.serial_connected:
+            # Belum ada koneksi serial sama sekali -> tampilkan status jelas,
+            # jangan biarkan panel diam di "STANDBY" tanpa penjelasan.
+            self.lbl_sys_status.setText("● MENCARI PERANGKAT (SERIAL)...")
+            self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_WARN};")
 
     def _toggle_recording(self):
         if self.machine_combo.currentIndex() == 0:
@@ -686,7 +796,7 @@ class Dashboard(QWidget):
             try:
                 self.csv_file = open(filename, 'w', newline='')
                 self.csv_writer = csv.writer(self.csv_file)
-                self.csv_writer.writerow(['timestamp', 'machine_type', 'rms_v', 'rms_a', 'current', 'temp'])
+                self.csv_writer.writerow(['timestamp', 'machine_type', 'rms_v', 'rms_a', 'current', 'temp', 'rpm', 'mahalanobis_d2', 'status'])
                 
                 self.recording = True
                 self.btn_toggle_rec.setText("BERHENTI RECORDING")
