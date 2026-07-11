@@ -1,52 +1,72 @@
-#include "DriverSuhu.h"
-#include "DriverArus.h"
+// DriverGetaran.cpp
 #include "DriverGetaran.h"
-#include "DriverINM.h"
+#include "config.h"
+#include <Wire.h>
+#include <Adafruit_LIS3DH.h>
+#include <Adafruit_Sensor.h>
+#include <math.h>
+#include "DualCoreTaskScheduler.h"
 
-struct DataSistem {
-    volatile float suhu;
-    volatile float arusRMS;
-    volatile float getaranRMS;
-    volatile float voldb;
-};
-DataSistem dataMesin;
+portMUX_TYPE getaranMux = portMUX_INITIALIZER_UNLOCKED;
+static TwoWire I2CLis3dh = TwoWire(0);
+static Adafruit_LIS3DH lis3dhInstance = Adafruit_LIS3DH(&I2CLis3dh);
 
-void setup() {
-    Serial.begin(115200);
-    while(!Serial);
-    Serial.println("[SYSTEM] Booting Modular Sensor Core (JSON Mode)...");
+void TaskDriverGetaran(void *pvParameters) {
+    (void)pvParameters;
 
-    xTaskCreatePinnedToCore(TaskDriverSuhu,    "Task_Suhu",    3072, &dataMesin, 2, NULL, 0);
-    xTaskCreatePinnedToCore(TaskDriverArus,    "Task_Arus",    3072, &dataMesin, 2, NULL, 0);
-    xTaskCreatePinnedToCore(TaskDriverGetaran, "Task_Vibrasi", 4096, &dataMesin, 2, NULL, 0);
-    xTaskCreatePinnedToCore(TaskDriverINM,     "Task_INM",     6144, &dataMesin, 3, NULL, 1);
+    I2CLis3dh.begin(PIN_LIS3DH_SDA, PIN_LIS3DH_SCL, 400000);
 
-    xTaskCreatePinnedToCore([](void *pv){
-        DataSistem *shared = (DataSistem *)pv;
+    bool sensorOK = lis3dhInstance.begin(0x18);
 
-        for(;;) {
-            String status = "NORMAL";
-            if (shared->getaranRMS > 50 || shared->suhu > 80) {
-                status = "WARNING";
-            }
-            if (shared->getaranRMS > 80 || shared->suhu > 100) {
-                status = "DANGER";
-            }
+    if (!sensorOK) {
+        sensorOK = lis3dhInstance.begin(0x19);
+    }
 
-            Serial.print("{");
-            Serial.print("\"suhu\":"); Serial.print(shared->suhu, 2); Serial.print(",");
-            Serial.print("\"arus\":"); Serial.print(shared->arusRMS, 2); Serial.print(",");
-            Serial.print("\"getaran\":"); Serial.print(shared->getaranRMS, 2); Serial.print(",");
-            Serial.print("\"suara\":"); Serial.print(shared->voldb, 2); Serial.print(",");
-            Serial.print("\"status\":\""); Serial.print(status); Serial.print("\"");
-            Serial.println("}");
+    if (!sensorOK) {
+        Serial.println(F("[ERROR] LIS3DH tidak ditemukan pada alamat 0x18 maupun 0x19"));
 
-            vTaskDelay(pdMS_TO_TICKS(500));
+        for (;;) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+
+    Serial.println(F("[SYSTEM] LIS3DH berhasil terdeteksi."));
+    lis3dhInstance.setRange(LIS3DH_RANGE_4_G);
+    lis3dhInstance.setDataRate(LIS3DH_DATARATE_LOWPOWER_5KHZ);  // aktual ~1.25kHz Normal HR mode (bug library #14), tetap 12-bit
+
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    const TickType_t xSamplingPeriod = pdMS_TO_TICKS((uint32_t)VIBRATION_SAMPLE_PERIOD_MS);
+
+    const float alpha = 0.98f;
+    float filteredMagnitudeOld = 0.0f;
+    float rawMagnitudeOld = 0.0f;
+    static VibrationBuffer localVibBuffer;
+
+    for (;;) {
+        sensors_event_t event;
+
+        for (int i = 0; i < FFT_SAMPLES; i++) {
+            lis3dhInstance.getEvent(&event);
+
+            float ax = event.acceleration.x;
+            float ay = event.acceleration.y;
+            float az = event.acceleration.z;
+
+            float rawMagnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
+            float dynamicVibration = alpha * (filteredMagnitudeOld + rawMagnitude - rawMagnitudeOld);
+
+            filteredMagnitudeOld = dynamicVibration;
+            rawMagnitudeOld = rawMagnitude;
+
+            localVibBuffer.samples[i] = dynamicVibration;
+            vTaskDelayUntil(&xLastWakeTime, xSamplingPeriod);
         }
 
-    }, "Task_Monitor_JSON", 4096, &dataMesin, 1, NULL, 1);
-}
+        QueueHandle_t q = Scheduler_GetVibrationQueue();
+        if (q != NULL) {
+            xQueueSend(q, &localVibBuffer, 0);
+        }
 
-void loop() {
-    vTaskDelete(NULL);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
