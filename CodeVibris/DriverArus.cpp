@@ -101,21 +101,11 @@ void TaskDriverArus(void *pvParameters) {
         float meanSquare      = (float)(sumSquared / ARUS_RMS_SAMPLE_COUNT);
         float rmsADC          = sqrtf(meanSquare);
 
-        Serial.print("[ARUS] rmsADC = ");
-        Serial.println(rmsADC);
-
-        const float CURRENT_GAIN = 3.8f;
         // FIX 5: Dokumentasi derivasi konversi
         // rmsADC adalah nilai RMS dalam satuan ADC count (bukan Volt, bukan Ampere).
         // ARUS_CAL_FACTOR mengkonversi langsung ke Ampere.
         // PERBARUI nilai ini berdasarkan kalibrasi empiris (lihat catatan di atas).
-        float calculatedCurrent = rmsADC * ARUS_CAL_FACTOR * CURRENT_GAIN;
-
-        Serial.print("RMS ADC = ");
-        Serial.print(rmsADC);
-
-        Serial.print(" Current = ");
-        Serial.println(calculatedCurrent);
+        float calculatedCurrent = rmsADC * ARUS_CAL_FACTOR;
 
         if (calculatedCurrent < ARUS_NOISE_GATE) {
             calculatedCurrent = 0.0f;
