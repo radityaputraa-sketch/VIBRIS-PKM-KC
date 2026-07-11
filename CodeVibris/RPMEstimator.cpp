@@ -35,7 +35,7 @@ bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snr
     // WAJIB dikalibrasi ulang pakai data motor nyata kalian — angka 3.0 ini
     // starting point, bukan angka final. Uji: motor mati vs motor nyala,
     // print SNR keduanya, tentukan threshold yang memisahkan dua kondisi jelas.
-    return snr >= 3.0f;
+    return snr >= 1.5f;
 }
 float RPM_Estimate(double *magnitude, int n, float sampleRate) {
     // Resolusi frekuensi per bin FFT = sampleRate / jumlah sample.
