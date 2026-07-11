@@ -1,35 +1,46 @@
+// DriverSuhu.cpp
 #include "DriverSuhu.h"
-#include <OneWire.h>
-#include <DallasTemperature.h>
+#include "config.h"
+#include <Wire.h>
+#include <Adafruit_MLX90614.h>
+#include "MultiSensorFeatureMerger.h"
 
-#define DS18B20_PIN 5
-OneWire oneWire(DS18B20_PIN);
-DallasTemperature sensors(&oneWire);
-
-struct DataSistem { volatile float suhu; volatile float arusRMS; volatile float getaranRMS; volatile float voldb; };
+// Bus I2C kedua, terpisah dari LIS3DH (yang pakai TwoWire(0) di pin 6/7)
+static TwoWire I2CMlx = TwoWire(1);
+static Adafruit_MLX90614 mlxInstance = Adafruit_MLX90614();
 
 void TaskDriverSuhu(void *pvParameters) {
-    DataSistem *shared = (DataSistem *)pvParameters;
-    sensors.begin();
-    sensors.setResolution(12);
-    sensors.setWaitForConversion(false);
-    
-    float lastValidSuhu = 27.0;
-    const float MAX_DELTA = 1.5000;
+    (void)pvParameters;
+
+    I2CMlx.begin(PIN_MLX_SDA, PIN_MLX_SCL, 100000);
+
+    if (!mlxInstance.begin(MLX90614_I2CADDR, &I2CMlx)) {
+        for (;;) {
+            Serial.println(F("[ERROR] Sensor MLX90614 (GY-906) Tidak Terdeteksi!"));
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+
+    float lastValidTemperature = SUHU_DEFAULT_VALID;
 
     for (;;) {
-        sensors.requestTemperatures();
-        vTaskDelay(pdMS_TO_TICKS(750)); 
-        
-        float raw = sensors.getTempCByIndex(0);
-        if (raw != -127.00 && raw != 85.00) {
-            // Slew Rate Limiter
-            if (abs(raw - lastValidSuhu) <= MAX_DELTA) {
-                lastValidSuhu = raw;
+        // MLX90614 non-kontak: baca suhu OBJEK (permukaan motor),
+        // bukan suhu ambient board itu sendiri
+        float rawTemperature = mlxInstance.readObjectTempC();
+
+        // FILTER 1: NaN = read I2C gagal / sensor lepas/putus
+        if (!isnan(rawTemperature)) {
+            // FILTER 2: Slew Rate Limiter tetap dipakai, parameter sama persis
+            if (abs(rawTemperature - lastValidTemperature) <= SUHU_MAX_DELTA) {
+                lastValidTemperature = rawTemperature;
             } else {
-                lastValidSuhu += (raw > lastValidSuhu) ? MAX_DELTA : -MAX_DELTA;
+                lastValidTemperature += (rawTemperature > lastValidTemperature) ? SUHU_MAX_DELTA : -SUHU_MAX_DELTA;
             }
-            shared->suhu = lastValidSuhu;
+            updateTemperatureFeature(lastValidTemperature);
+        } else {
+            Serial.println(F("[ERROR] Sensor MLX90614 Terputus / Malfungsi!"));
         }
+
+        vTaskDelay(pdMS_TO_TICKS(TICK_DELAY_SUHU));
     }
 }
