@@ -1,5 +1,10 @@
-#ifndef DRIVER_ARUS_H
-#define DRIVER_ARUS_H
+// DriverArus.h
+#pragma once
 #include <Arduino.h>
+#include "SharedTypes.h" // Menyediakan akses ke struct SensorFeatures lintas file
+//arus gunakan 2 resisto dan 1 kapasitor ditenga
+// ===================================================================
+// PROTOTIPE FUNGSI UTAMA (TASK FREERTOS)
+// ===================================================================
 void TaskDriverArus(void *pvParameters);
-#endif
+//end DriverArus.h
