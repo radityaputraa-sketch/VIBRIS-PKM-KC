@@ -47,6 +47,17 @@ COL_TEXT_LIGHT = "#f2f2f2"
 COL_OK = "#2e7d32"
 COL_WARN = "#e08e00"
 COL_BAD = "#c62828"
+COL_HEADER_BG = "#e3b419"
+
+# Ambang batas D^2 Mahalanobis PERSIS SAMA dengan firmware ESP32
+# (lihat MahalanobisDetector.cpp: CHI_SQUARE_95 / CHI_SQUARE_99), supaya
+# garis ambang batas di grafik dashboard konsisten dengan status yang
+# dikirim device, bukan angka karang-karangan dari sisi Python.
+D2_THRESHOLD_WASPADA = 9.49   # chi-square, df=4, confidence 95%
+D2_THRESHOLD_BAHAYA = 13.28   # chi-square, df=4, confidence 99%
+
+# Urutan tingkat keparahan status, dipakai buat menentukan "Kondisi Terparah" per sesi
+STATUS_SEVERITY = {"normal": 0, "waspada": 1, "bahaya": 2}
 
 class LogDetailDialog(QDialog):
     """
@@ -291,8 +302,12 @@ class Dashboard(QWidget):
         super().__init__()
         self.setWindowTitle("HMI | Rotating Machinery Detection System")
         
-        # ===== PENGATURAN DEDICATED FULLSCREEN UNTUK LAYAR TFT RASPBERRY PI =====
+        # ===== PENGATURAN UKURAN TETAP 480x320 SESUAI LAYAR TFT RASPBERRY PI =====
+        # Dikunci pas (bukan fullscreen otomatis) supaya tampilan selalu presisi
+        # 480x320, gak tergantung resolusi layar yang lagi dipakai buat testing
+        # di laptop (yang biasanya lebih gede dari layar TFT Raspi aslinya).
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setFixedSize(480, 320)
         self.setStyleSheet(f"background-color: {COL_BG_MAIN}; color: {COL_TEXT_LIGHT}; font-family: Arial;")
 
         # Data Buffer Sinkronisasi Plot Grafik (Panjang data 50 point antrean)
@@ -302,7 +317,11 @@ class Dashboard(QWidget):
         self.a_buffer = deque(maxlen=self.data_len)
         self.cur_buffer = deque(maxlen=self.data_len)
         self.temp_buffer = deque(maxlen=self.data_len)
+        self.rpm_buffer = deque(maxlen=self.data_len)
+        self.d2_buffer = deque(maxlen=self.data_len)
         self.tick = 0
+        self.last_processed_tick = 0
+        self.last_raw_line = ""
 
         # Variabel Penampung Nilai Sensor Terkini (Awalnya kosong sebelum ada data serial masuk)
         self.current_v = None
@@ -312,6 +331,15 @@ class Dashboard(QWidget):
         self.current_rpm = None
         self.current_d2 = None
         self.current_status_device = ""
+
+        # ===== STATISTIK SESI (dipakai tab Processed & Summary, di-reset via tombol RESET) =====
+        self.session_sample_count = 0
+        self.session_rpm_sum = 0.0
+        self.session_d2_max = 0.0
+        self.session_worst_status = "Normal"
+        self.session_waspada_count = 0
+        self.session_bahaya_count = 0
+        self.anomaly_events = []  # list of str, event log kejadian Waspada/Bahaya
 
         # Status Operasional Recording & Serial Hardware
         self.recording = False
@@ -327,22 +355,62 @@ class Dashboard(QWidget):
 
         # ===== HEADER BAR =====
         header = QHBoxLayout()
-        title_lbl = QLabel("VIBRIS DETEKSI DINI MESIN ROTASI")
-        title_lbl.setStyleSheet("font-size: 10px; font-weight: bold; color: #ffffff;")
-        self.time_lbl = QLabel("--:--:--")
-        self.time_lbl.setStyleSheet("font-size: 10px; font-weight: bold; color: #00e676;")
-        self.time_lbl.setAlignment(Qt.AlignRight)
-        header.addWidget(title_lbl)
-        header.addWidget(self.time_lbl)
-        root.addLayout(header)
+        header.setSpacing(6)
+        header_frame = QFrame()
+        header_frame.setStyleSheet(f"background-color: {COL_HEADER_BG}; border-radius: 4px;")
+        header_frame.setLayout(header)
 
-        # ===== STACKED PAGES (KONTEN UTAMA DI TENGAH) =====
+        self.lbl_machine_name = QLabel("- Pilih Mesin Target -")
+        self.lbl_machine_name.setStyleSheet("font-size: 13px; font-weight: bold; color: #1c1e22; padding: 4px 6px;")
+        header.addWidget(self.lbl_machine_name, 3)
+
+        header.addStretch(1)
+
+        self.btn_reset = QPushButton("RESET")
+        self.btn_reset.setStyleSheet(f"background-color: {COL_ACCENT}; color: #ffffff; font-weight: bold; font-size: 8px; padding: 4px 8px; border-radius: 3px;")
+        self.btn_reset.clicked.connect(self._reset_session)
+        header.addWidget(self.btn_reset)
+
+        self.btn_debug = QPushButton("DEBUG")
+        self.btn_debug.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: #ffffff; font-weight: bold; font-size: 8px; padding: 4px 8px; border-radius: 3px;")
+        self.btn_debug.clicked.connect(self._show_debug_info)
+        header.addWidget(self.btn_debug)
+
+        self.lbl_conn_dot = QLabel("●")
+        self.lbl_conn_dot.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_BAD};")
+        header.addWidget(self.lbl_conn_dot)
+
+        self.time_lbl = QLabel("--:--:--")
+        self.time_lbl.setStyleSheet("font-size: 10px; font-weight: bold; color: #1c1e22;")
+        self.time_lbl.setAlignment(Qt.AlignRight)
+        header.addWidget(self.time_lbl)
+
+        root.addWidget(header_frame)
+
+        # ===== STACKED PAGES (KONTEN UTAMA DI TENGAH) DENGAN NAVIGASI PANAH KIRI/KANAN =====
+        stack_row = QHBoxLayout()
+        stack_row.setSpacing(2)
+
+        self.btn_nav_prev = QPushButton("‹")
+        self.btn_nav_prev.setFixedWidth(28)
+        self.btn_nav_prev.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: #ffffff; font-size: 16px; font-weight: bold; border-radius: 14px;")
+        self.btn_nav_prev.clicked.connect(lambda: self._change_page((self.stack.currentIndex() - 1) % 4))
+        stack_row.addWidget(self.btn_nav_prev)
+
         self.stack = QStackedWidget()
         self.stack.addWidget(self._page_raw())       # Index 0
         self.stack.addWidget(self._page_recording()) # Index 1
         self.stack.addWidget(self._page_processed()) # Index 2
         self.stack.addWidget(self._page_summary())   # Index 3
-        root.addWidget(self.stack, 1)
+        stack_row.addWidget(self.stack, 1)
+
+        self.btn_nav_next = QPushButton("›")
+        self.btn_nav_next.setFixedWidth(28)
+        self.btn_nav_next.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: #ffffff; font-size: 16px; font-weight: bold; border-radius: 14px;")
+        self.btn_nav_next.clicked.connect(lambda: self._change_page((self.stack.currentIndex() + 1) % 4))
+        stack_row.addWidget(self.btn_nav_next)
+
+        root.addLayout(stack_row, 1)
 
         # ===== NAVIGASI TOMBOL UTAMA DI SEBELAH BAWAH (WARNA HURUF HITAM CONTRAS) =====
         nav_bottom = QHBoxLayout()
@@ -355,7 +423,7 @@ class Dashboard(QWidget):
 
         self.menu_buttons = [self.btn_raw, self.btn_rec, self.btn_proc, self.btn_sum]
         for i, btn in enumerate(self.menu_buttons):
-            btn.setFixedHeight(38)  # Tinggi ergonomis ramah sentuhan jari pada layar kecil
+            btn.setFixedHeight(42)  # Tinggi ergonomis ramah sentuhan jari pada layar kecil
             btn.setStyleSheet(self._menu_style(False))
             btn.clicked.connect(lambda checked, idx=i: self._change_page(idx))
             nav_bottom.addWidget(btn)
@@ -373,13 +441,13 @@ class Dashboard(QWidget):
         # Set Halaman Awal & Muat Berkas Rekaman (.csv) bawaan ketua tim
         self._change_page(0)
         self._refresh_log_list()
-        self.showFullScreen()
+        self.show()
 
     def _menu_style(self, active):
         # Seluruh tulisan teks pada tombol menu dipastikan tetap berwarna hitam pekat kontras tinggi
         if active:
-            return f"background-color: {COL_ACCENT}; color: #000000; font-size: 9px; font-weight: bold; border: 1px solid white; border-radius: 4px;"
-        return f"background-color: #cfcfcf; color: #000000; font-size: 9px; font-weight: bold; border: 1px solid #444; border-radius: 4px;"
+            return f"background-color: {COL_ACCENT}; color: #000000; font-size: 12px; font-weight: bold; border: 1px solid white; border-radius: 4px;"
+        return f"background-color: #cfcfcf; color: #000000; font-size: 12px; font-weight: bold; border: 1px solid #444; border-radius: 4px;"
 
     def _change_page(self, idx):
         self.stack.setCurrentIndex(idx)
@@ -394,15 +462,20 @@ class Dashboard(QWidget):
         layout.setSpacing(2)
 
         top_bar = QHBoxLayout()
-        top_bar.addWidget(QLabel("Target Mesin:"))
+        lbl_target_mesin = QLabel("Target Mesin:")
+        lbl_target_mesin.setStyleSheet("font-size: 12px; font-weight: bold; color: #ffffff;")
+        top_bar.addWidget(lbl_target_mesin)
         self.machine_combo = QComboBox()
         self.machine_combo.addItems([
             "- Pilih Mesin Target -",
             "Blower Industri UMKM", 
             "Motor Induksi Pompa Air", 
-            "Kompresor Production"
+            "Kompresor Production",
+            "Mesin Blender"
         ])
-        self.machine_combo.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 9px; padding: 2px;")
+        self.machine_combo.setFixedHeight(30)
+        self.machine_combo.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 12px; padding: 4px;")
+        self.machine_combo.currentTextChanged.connect(self._on_machine_changed)
         top_bar.addWidget(self.machine_combo, 1)
         layout.addLayout(top_bar)
 
@@ -526,45 +599,64 @@ class Dashboard(QWidget):
 
         return page
 
-    # ===================== HALAMAN 3: PROCESSED READING (KOMPARASI BASELINE) =====================
+    # ===================== HALAMAN 3: PROCESSED READING (RPM, MAHALANOBIS D², LOG ANOMALI) =====================
     def _page_processed(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 4)
-        
+        layout.setSpacing(4)
+
+        self.lbl_proc_snapshot = QLabel("Menunggu data... | RPM: -- | D²: --")
+        self.lbl_proc_snapshot.setStyleSheet("font-size: 8px; color: #999;")
+        layout.addWidget(self.lbl_proc_snapshot)
+
+        # ===== 2 GRAFIK: RPM ESTIMASI & MAHALANOBIS D² (dengan garis ambang batas) =====
         grid = QGridLayout()
         grid.setSpacing(4)
+        pg.setConfigOptions(antialias=True)
 
-        lbl_header_param = QLabel("PARAMETER")
-        lbl_header_real = QLabel("REAL-TIME")
-        lbl_header_base = QLabel("BASELINE (NORMAL)")
-        
-        lbl_header_param.setStyleSheet("font-weight: bold; font-size: 9px;")
-        lbl_header_real.setStyleSheet("font-weight: bold; font-size: 9px;")
-        lbl_header_base.setStyleSheet("font-weight: bold; font-size: 9px;")
+        self.graph_rpm = pg.PlotWidget(title="RPM Estimasi")
+        self.graph_rpm.setBackground(COL_PANEL_DARK)
+        self.graph_rpm.showGrid(x=True, y=True, alpha=0.3)
+        self.curve_rpm = self.graph_rpm.plot(pen=pg.mkPen('#4da6ff', width=1.5))
+        grid.addWidget(self.graph_rpm, 0, 0)
 
-        grid.addWidget(lbl_header_param, 0, 0)
-        grid.addWidget(lbl_header_real, 0, 1)
-        grid.addWidget(lbl_header_base, 0, 2)
+        self.graph_d2 = pg.PlotWidget(title="Mahalanobis D²")
+        self.graph_d2.setBackground(COL_PANEL_DARK)
+        self.graph_d2.showGrid(x=True, y=True, alpha=0.3)
+        self.curve_d2 = self.graph_d2.plot(pen=pg.mkPen('#ff6666', width=1.5))
+        # Garis putus-putus ambang batas Waspada (kuning) & Bahaya (merah),
+        # nilainya persis sama dengan chi-square threshold di firmware.
+        line_waspada = pg.InfiniteLine(pos=D2_THRESHOLD_WASPADA, angle=0,
+                                        pen=pg.mkPen(COL_WARN, width=1.5, style=Qt.DashLine))
+        line_bahaya = pg.InfiniteLine(pos=D2_THRESHOLD_BAHAYA, angle=0,
+                                       pen=pg.mkPen(COL_BAD, width=1.5, style=Qt.DashLine))
+        self.graph_d2.addItem(line_waspada)
+        self.graph_d2.addItem(line_bahaya)
+        grid.addWidget(self.graph_d2, 0, 1)
 
-        self.proc_v = [QLabel("Vibration RMS"), QLabel("-"), QLabel("0.15 G")]
-        self.proc_a = [QLabel("Sound Level"), QLabel("-"), QLabel("45.0 dB")]
-        self.proc_c = [QLabel("Current Motor"), QLabel("-"), QLabel("1.20 A")]
-        self.proc_t = [QLabel("Suhu Bearing"), QLabel("-"), QLabel("36.5 °C")]
-        self.proc_rpm = [QLabel("Estimasi RPM"), QLabel("-"), QLabel("-")]
-        self.proc_d2 = [QLabel("Mahalanobis D²"), QLabel("-"), QLabel("-")]
+        layout.addLayout(grid, 3)
 
-        for row, labels in enumerate([self.proc_v, self.proc_a, self.proc_c, self.proc_t,
-                                       self.proc_rpm, self.proc_d2], start=1):
-            for col, lbl in enumerate(labels):
-                lbl.setStyleSheet(f"font-size: 9px; background-color: {COL_PANEL_DARK}; padding: 4px; border-radius: 2px; color: #aaa;")
-                grid.addWidget(lbl, row, col)
+        # ===== LOG KEJADIAN ANOMALI SEPANJANG SESI =====
+        lbl_anomali_title = QLabel("Log Kejadian Anomali:")
+        lbl_anomali_title.setStyleSheet("font-size: 8px; font-weight: bold; color: #ccc;")
+        layout.addWidget(lbl_anomali_title)
 
-        layout.addLayout(grid)
-        
-        self.lbl_proc_note = QLabel("* Alat dalam kondisi standby. Menunggu aliran data UART...")
-        self.lbl_proc_note.setStyleSheet("font-size: 8px; color: #aaa; font-style: italic;")
-        layout.addWidget(self.lbl_proc_note)
+        self.list_anomali = QListWidget()
+        self.list_anomali.setStyleSheet("background-color: #ffffff; color: #222222; font-size: 9px;")
+        self.list_anomali.addItem("Tidak ada kejadian anomali sepanjang sesi ini.")
+        layout.addWidget(self.list_anomali, 2)
+
+        # ===== RINGKASAN STATISTIK SESI (footer hijau muda) =====
+        self.lbl_session_summary = QLabel(
+            "Sesi: 0 sample | RPM rata-rata: 0.0 | D² max: 0.00 | Kondisi terparah: Normal | Waspada: 0x, Bahaya: 0x."
+        )
+        self.lbl_session_summary.setStyleSheet(
+            "font-size: 9px; color: #1c3d1c; background-color: #d7f0d7; padding: 4px; border-radius: 3px;"
+        )
+        self.lbl_session_summary.setWordWrap(True)
+        layout.addWidget(self.lbl_session_summary)
+
         return page
 
     # ===================== HALAMAN 4: DIAGNOSIS SUMMARY (KESIMPULAN KONDISI) =====================
@@ -573,26 +665,48 @@ class Dashboard(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
+        layout.addStretch(1)
 
-        lbl_summary_title = QLabel("KESIMPULAN DIAGNOSA KONDISI MESIN:")
-        lbl_summary_title.setStyleSheet("font-weight: bold; font-size: 10px;")
-        layout.addWidget(lbl_summary_title)
+        row = QHBoxLayout()
+        row.addStretch(1)
 
         self.box_diagnosis = QFrame()
-        self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 1px solid #444; border-radius: 6px;")
+        self.box_diagnosis.setFixedWidth(360)
+        self.box_diagnosis.setStyleSheet(f"background-color: transparent; border: 3px solid #888; border-radius: 4px;")
         box_lay = QVBoxLayout(self.box_diagnosis)
-        
-        self.lbl_diag_status = QLabel("STATUS MESIN: STANDBY")
-        self.lbl_diag_status.setStyleSheet("font-size: 12px; font-weight: bold; color: #888888;")
+        box_lay.setContentsMargins(14, 14, 14, 14)
+        box_lay.setSpacing(8)
+
+        self.lbl_diag_status = QLabel("STATUS: STANDBY")
+        self.lbl_diag_status.setStyleSheet("font-size: 20px; font-weight: bold; color: #222;")
         self.lbl_diag_status.setAlignment(Qt.AlignCenter)
         box_lay.addWidget(self.lbl_diag_status)
 
+        self.lbl_diag_readout = QFrame()
+        self.lbl_diag_readout.setStyleSheet("border: 2px solid #888; border-radius: 3px;")
+        readout_lay = QHBoxLayout(self.lbl_diag_readout)
+        readout_lay.setContentsMargins(6, 4, 6, 4)
+        self.lbl_diag_rpm = QLabel("RPM: 0.0")
+        self.lbl_diag_rpm.setStyleSheet("font-size: 13px; font-weight: bold; color: #222;")
+        self.lbl_diag_d2 = QLabel("D²: 0.00")
+        self.lbl_diag_d2.setStyleSheet("font-size: 13px; font-weight: bold; color: #222;")
+        readout_lay.addWidget(self.lbl_diag_rpm)
+        readout_lay.addStretch(1)
+        readout_lay.addWidget(self.lbl_diag_d2)
+        box_lay.addWidget(self.lbl_diag_readout)
+
+        row.addWidget(self.box_diagnosis)
+        row.addStretch(1)
+        layout.addLayout(row)
+        layout.addStretch(1)
+
+        # Deskripsi ringkas kondisi (dipertahankan, ditaruh di bawah panel besar)
         self.lbl_diag_desc = QLabel("Belum ada data deteksi yang diproses. Silakan pilih target mesin dan hubungkan kabel hardware.")
         self.lbl_diag_desc.setStyleSheet("font-size: 9px; color: #888;")
         self.lbl_diag_desc.setWordWrap(True)
-        box_lay.addWidget(self.lbl_diag_desc)
+        self.lbl_diag_desc.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_diag_desc)
 
-        layout.addWidget(self.box_diagnosis)
         return page
 
     # ===================== LOGIKA THREAD BACKEND BACA REAL-TIME DATA SERIAL =====================
@@ -642,6 +756,8 @@ class Dashboard(QWidget):
                     continue
                 line = raw.decode('utf-8', errors='ignore').strip()
 
+                print("SERIAL >>>", line)
+
                 # Firmware ESP32 mencampur baris debug teks biasa dengan baris
                 # data JSON di stream Serial yang sama (lihat komentar di
                 # RaspberryPiDataTransmitter.cpp) -> baris yang bukan JSON dilewati.
@@ -653,6 +769,8 @@ class Dashboard(QWidget):
                 except (json.JSONDecodeError, ValueError):
                     # Baris JSON terpotong (bisa terjadi di baud rate tinggi) -> lewati
                     continue
+
+                self.last_raw_line = line
 
                 # Format paket sesuai Transmitter_SendResult() di firmware:
                 # {"rms_v":.., "rms_a":.., "cur":.., "temp":.., "rpm":.., "d2":.., "status":".."}
@@ -671,17 +789,29 @@ class Dashboard(QWidget):
                 self.a_buffer.append(self.current_a)
                 self.cur_buffer.append(self.current_cur)
                 self.temp_buffer.append(self.current_temp)
+                self.rpm_buffer.append(self.current_rpm)
+                self.d2_buffer.append(self.current_d2)
 
                 # Menyimpan data riil ke dalam berkas CSV jika perekaman aktif
                 if self.recording and self.csv_writer:
+                    # BUG LAMA: sebelumnya baris ini memakai variabel `elapsed`
+                    # yang tidak pernah dihitung di fungsi ini -> setiap kali
+                    # tombol recording ditekan, baris pertama yang masuk akan
+                    # langsung lempar NameError, ketangkep except Exception di
+                    # bawah, lalu thread serial dianggap "gagal tersambung"
+                    # dan koneksi ke ESP32 di-reset berulang-ulang. Makanya
+                    # recording kelihatan seperti tidak jalan / dashboard
+                    # keputus-putus begitu recording dinyalakan.
+                    elapsed = time.perf_counter() - self.record_start_time
                     self.csv_writer.writerow([
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        round(elapsed, 3),
                         self.machine_combo.currentText(),
                         self.current_v, self.current_a, self.current_cur, self.current_temp,
                         self.current_rpm, self.current_d2, self.current_status_device
                     ])
                     self.csv_file.flush()
             except Exception as e:
+                print(f"[SERIAL] gagal tersambung: {e}")
                 self.serial_connected = False
                 self.ser = None
                 # Reset data ke kondisi kosong jika kabel USB terputus
@@ -697,22 +827,38 @@ class Dashboard(QWidget):
         # pakai itu langsung. Threshold v/temp di bawah cuma fallback kalau
         # firmware belum/tidak mengirim field "status".
         status_map = {
-            "bahaya": ("STATUS MESIN: BAHAYA (CRITICAL)", COL_BAD,
+            "bahaya": ("STATUS: BAHAYA (CRITICAL)", COL_BAD,
                        "Terjadi anomali gesekan parah atau ketiadaan lubrikasi bearing! Segera matikan mesin produksi.",
                        "● DEVIASI BAHAYA"),
-            "waspada": ("STATUS MESIN: WASPADA (WARNING)", COL_WARN,
+            "waspada": ("STATUS: WASPADA (WARNING)", COL_WARN,
                         "Indikasi awal ketidakseimbangan massa atau degradasi mekanis bearing terdeteksi.",
                         "● STATUS WASPADA"),
-            "normal": ("STATUS MESIN: NORMAL", COL_OK,
+            "normal": ("STATUS: NORMAL", COL_OK,
                        "Seluruh parameter berjalan di bawah ambang batas deviasi krisis karsa cipta. Mesin aman digunakan.",
                        "● SYSTEM ONLINE"),
+            # Dikirim firmware selama ~8 detik pertama setelah boot, selagi
+            # buffer sensor (mic, FFT getaran, dll.) masih mengisi sample
+            # pertamanya. Ini kondisi WAJAR, bukan error -> jangan ditampilkan
+            # dengan warna merah/kuning yang bikin panik.
+            "warming": ("STATUS: MENYIAPKAN SENSOR", "#888888",
+                        "Perangkat baru menyala, sensor sedang mengambil sample pertama. Tunggu beberapa detik.",
+                        "● WARMING UP"),
+            # Status ini praktis tidak dikirim lagi oleh firmware versi terbaru
+            # (main.ino sudah tidak punya fase kalibrasi), tapi tetap dijaga di
+            # sini untuk kompatibilitas kalau firmware lama masih dipakai.
+            "notcalibrated": ("STATUS: BELUM KALIBRASI", "#888888",
+                               "Device belum menyelesaikan kalibrasi baseline awal. Biarkan mesin berjalan normal beberapa saat.",
+                               "● KALIBRASI BASELINE"),
+            "sensorfault": ("STATUS: SENSOR ERROR", COL_WARN,
+                            "Data sensor basi/tidak lengkap terdeteksi firmware. Sudah lebih dari 8 detik sejak boot — cek sambungan sensor.",
+                            "● SENSOR FAULT"),
         }
         key = (device_status or "").strip().lower()
         if key in status_map:
             title, color, desc, sys_txt = status_map[key]
             self.lbl_diag_status.setText(title)
-            self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {color};")
-            self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {color}; border-radius: 6px;")
+            self.lbl_diag_status.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
+            self.box_diagnosis.setStyleSheet(f"background-color: transparent; border: 3px solid {color}; border-radius: 4px;")
             self.lbl_diag_desc.setText(desc)
             self.lbl_sys_status.setText(sys_txt)
             self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {color};")
@@ -720,26 +866,68 @@ class Dashboard(QWidget):
 
         # Evaluasi Kritis Kondisi Mesin (Diagnosa Otomatis di Tab Summary) - fallback
         if v > 0.25 or temp > 50.0:
-            self.lbl_diag_status.setText("STATUS MESIN: BAHAYA (CRITICAL)")
-            self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_BAD};")
-            self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {COL_BAD}; border-radius: 6px;")
+            self.lbl_diag_status.setText("STATUS: BAHAYA (CRITICAL)")
+            self.lbl_diag_status.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {COL_BAD};")
+            self.box_diagnosis.setStyleSheet(f"background-color: transparent; border: 3px solid {COL_BAD}; border-radius: 4px;")
             self.lbl_diag_desc.setText("Terjadi anomali gesekan parah atau ketiadaan lubrikasi bearing! Segera matikan mesin produksi.")
             status_txt, status_col = "● DEVIASI BAHAYA", COL_BAD
         elif v > 0.18 or temp > 42.0:
-            self.lbl_diag_status.setText("STATUS MESIN: WASPADA (WARNING)")
-            self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_WARN};")
-            self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {COL_WARN}; border-radius: 6px;")
+            self.lbl_diag_status.setText("STATUS: WASPADA (WARNING)")
+            self.lbl_diag_status.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {COL_WARN};")
+            self.box_diagnosis.setStyleSheet(f"background-color: transparent; border: 3px solid {COL_WARN}; border-radius: 4px;")
             self.lbl_diag_desc.setText("Indikasi awal ketidakseimbangan massa atau degradasi mekanis bearing terdeteksi.")
             status_txt, status_col = "● STATUS WASPADA", COL_WARN
         else:
-            self.lbl_diag_status.setText("STATUS MESIN: NORMAL")
-            self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {COL_OK};")
-            self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {COL_OK}; border-radius: 6px;")
+            self.lbl_diag_status.setText("STATUS: NORMAL")
+            self.lbl_diag_status.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {COL_OK};")
+            self.box_diagnosis.setStyleSheet(f"background-color: transparent; border: 3px solid {COL_OK}; border-radius: 4px;")
             self.lbl_diag_desc.setText("Seluruh parameter berjalan di bawah ambang batas deviasi krisis karsa cipta. Mesin aman digunakan.")
             status_txt, status_col = "● SYSTEM ONLINE", COL_OK
 
         self.lbl_sys_status.setText(status_txt)
         self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {status_col};")
+
+    def _on_machine_changed(self, text):
+        self.lbl_machine_name.setText(text)
+
+    def _reset_session(self):
+        """Tombol RESET di header: nge-reset statistik & log kejadian anomali sesi
+        berjalan saat ini. Tidak menghapus file rekaman CSV yang sudah tersimpan."""
+        self.session_sample_count = 0
+        self.session_rpm_sum = 0.0
+        self.session_d2_max = 0.0
+        self.session_worst_status = "Normal"
+        self.session_waspada_count = 0
+        self.session_bahaya_count = 0
+        self.anomaly_events = []
+        self.last_processed_tick = self.tick
+        self.list_anomali.clear()
+        self.list_anomali.addItem("Tidak ada kejadian anomali sepanjang sesi ini.")
+        self._render_session_summary()
+
+    def _show_debug_info(self):
+        """Tombol DEBUG di header: nampilin info koneksi & baris data mentah
+        terakhir yang diterima, buat troubleshooting cepat pas uji coba di lab."""
+        port_info = self.ser.port if (self.ser is not None) else "(belum ada koneksi)"
+        info = (
+            f"Status koneksi   : {'TERSAMBUNG' if self.serial_connected else 'TIDAK TERSAMBUNG'}\n"
+            f"Port serial      : {port_info}\n"
+            f"Baud rate        : {BAUD_RATE}\n"
+            f"Baris JSON akhir : {self.last_raw_line or '(belum ada data masuk)'}\n"
+            f"Vib/Snd/Cur/Tmp  : {self.current_v}, {self.current_a}, {self.current_cur}, {self.current_temp}\n"
+            f"RPM / D²         : {self.current_rpm}, {self.current_d2}\n"
+            f"Status firmware  : {self.current_status_device or '-'}"
+        )
+        QMessageBox.information(self, "DEBUG - Info Koneksi & Data Terakhir", info)
+
+    def _render_session_summary(self):
+        self.lbl_session_summary.setText(
+            f"Sesi: {self.session_sample_count} sample | "
+            f"RPM rata-rata: {(self.session_rpm_sum / self.session_sample_count) if self.session_sample_count else 0.0:.1f} | "
+            f"D² max: {self.session_d2_max:.2f} | "
+            f"Kondisi terparah: {self.session_worst_status} | "
+            f"Waspada: {self.session_waspada_count}x, Bahaya: {self.session_bahaya_count}x."
+        )
 
     # ===================== LOGIKA EMBEDDED KOMPARASI & REFRESH GUI (MODE LIVE) =====================
     def _update_gui(self):
@@ -747,13 +935,22 @@ class Dashboard(QWidget):
         now = datetime.now().strftime("%H:%M:%S")
         self.time_lbl.setText(now)
 
-        # Logika eksekusi jika data sensor valid masuk dari port serial COM6
+        # Indikator titik koneksi di header: hijau kalau tersambung, merah kalau tidak
+        self.lbl_conn_dot.setStyleSheet(
+            f"font-size: 12px; font-weight: bold; color: {COL_OK if self.serial_connected else COL_BAD};"
+        )
+
+        # Logika eksekusi jika data sensor valid masuk dari port serial
         if self.current_v is not None:
-            # Refresh pergerakan 4 gelombang garis grafik secara simultan
+            # Refresh pergerakan 4 gelombang garis grafik secara simultan (Raw Reading)
             self.curve_v.setData(list(self.time_buffer), list(self.v_buffer))
             self.curve_a.setData(list(self.time_buffer), list(self.a_buffer))
             self.curve_cur.setData(list(self.time_buffer), list(self.cur_buffer))
             self.curve_temp.setData(list(self.time_buffer), list(self.temp_buffer))
+
+            # Refresh grafik RPM & Mahalanobis D² (Processed)
+            self.curve_rpm.setData(list(self.time_buffer), list(self.rpm_buffer))
+            self.curve_d2.setData(list(self.time_buffer), list(self.d2_buffer))
 
             # Sinkronisasi teks angka di tab Raw Reading
             self.lbl_val_v.setText(f"Vib: {self.current_v:.2f} G")
@@ -765,26 +962,70 @@ class Dashboard(QWidget):
             if self.current_d2 is not None:
                 self.lbl_val_d2.setText(f"D²(Mahalanobis): {self.current_d2:.2f}")
 
-            # Sinkronisasi teks perbandingan di tab Processed Reading
-            self.proc_v[1].setText(f"{self.current_v:.2f} G")
-            self.proc_a[1].setText(f"{self.current_a:.1f} dB")
-            self.proc_c[1].setText(f"{self.current_cur:.2f} A")
-            self.proc_t[1].setText(f"{self.current_temp:.1f} °C")
-            if self.current_rpm is not None:
-                self.proc_rpm[1].setText(f"{self.current_rpm:.0f} rpm")
-            if self.current_d2 is not None:
-                self.proc_d2[1].setText(f"{self.current_d2:.2f}")
-            self.lbl_proc_note.setText("* Data diolah melalui Edge Computing terkomparasi Statistical Self-Baseline.")
+            rpm_txt = f"{self.current_rpm:.0f}" if self.current_rpm is not None else "--"
+            d2_txt = f"{self.current_d2:.2f}" if self.current_d2 is not None else "--"
+            self.lbl_proc_snapshot.setText(
+                f"Live | Vib: {self.current_v:.2f} G | Snd: {self.current_a:.1f} dB | "
+                f"Cur: {self.current_cur:.2f} A | Tmp: {self.current_temp:.1f} °C | RPM: {rpm_txt} | D²: {d2_txt}"
+            )
 
             # Evaluasi diagnosa otomatis. Kalau firmware sudah mengirim status_label
             # hasil klasifikasi Mahalanobis (Normal/Waspada/Bahaya), itu dipakai
             # langsung karena lebih akurat daripada re-threshold sederhana di Python.
             self._evaluate_diagnosis(self.current_v, self.current_temp, self.current_status_device)
+
+            # Sinkronisasi panel besar di tab Summary
+            self.lbl_diag_rpm.setText(f"RPM: {rpm_txt}")
+            self.lbl_diag_d2.setText(f"D²: {d2_txt}")
+
+            # ===== AKUMULASI STATISTIK SESI - hanya sekali per sample baru masuk,
+            # bukan tiap 200ms timer, biar tidak dobel-hitung sample yang sama =====
+            if self.tick != self.last_processed_tick:
+                self.last_processed_tick = self.tick
+                self.session_sample_count += 1
+                if self.current_rpm is not None:
+                    self.session_rpm_sum += self.current_rpm
+                if self.current_d2 is not None:
+                    self.session_d2_max = max(self.session_d2_max, self.current_d2)
+
+                status_key = (self.current_status_device or "").strip().lower()
+                if status_key == "waspada":
+                    self.session_waspada_count += 1
+                elif status_key == "bahaya":
+                    self.session_bahaya_count += 1
+
+                if status_key in STATUS_SEVERITY:
+                    if STATUS_SEVERITY[status_key] > STATUS_SEVERITY.get(self.session_worst_status.lower(), 0):
+                        self.session_worst_status = self.current_status_device.capitalize()
+
+                if status_key in ("waspada", "bahaya"):
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    event_txt = (
+                        f"[{ts}] {self.current_status_device.upper()} — RPM {rpm_txt}, D² {d2_txt}, "
+                        f"Vib {self.current_v:.2f}G, Tmp {self.current_temp:.1f}°C"
+                    )
+                    self.anomaly_events.append(event_txt)
+                    if self.list_anomali.count() == 1 and self.list_anomali.item(0).text().startswith("Tidak ada"):
+                        self.list_anomali.clear()
+                    self.list_anomali.addItem(event_txt)
+                    self.list_anomali.scrollToBottom()
+
+                self._render_session_summary()
         elif not self.serial_connected:
             # Belum ada koneksi serial sama sekali -> tampilkan status jelas,
             # jangan biarkan panel diam di "STANDBY" tanpa penjelasan.
             self.lbl_sys_status.setText("● MENCARI PERANGKAT (SERIAL)...")
             self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_WARN};")
+        else:
+            # Port SUDAH konek, tapi belum ada baris JSON yang berhasil diparse
+            # (misal ESP32 baru saja reboot dan masih mengirim baris teks debug
+            # boot, bukan JSON) -> jangan tampilkan seolah masih gagal konek,
+            # karena itu menyesatkan. Firmware sekarang TIDAK ADA lagi fase
+            # kalibrasi 60 detik, jadi baris JSON pertama seharusnya muncul
+            # dalam hitungan detik setelah boot.
+            self.lbl_sys_status.setText("● TERSAMBUNG — MENUNGGU DATA JSON...")
+            self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {COL_ACCENT};")
+            self.lbl_proc_snapshot.setText("Menunggu koneksi serial ke ESP32...")
 
     def _toggle_recording(self):
         if self.machine_combo.currentIndex() == 0:
@@ -797,7 +1038,8 @@ class Dashboard(QWidget):
                 self.csv_file = open(filename, 'w', newline='')
                 self.csv_writer = csv.writer(self.csv_file)
                 self.csv_writer.writerow(['timestamp', 'machine_type', 'rms_v', 'rms_a', 'current', 'temp', 'rpm', 'mahalanobis_d2', 'status'])
-                
+                self.record_start_time = time.perf_counter()
+                self.last_csv_time = 0.0
                 self.recording = True
                 self.btn_toggle_rec.setText("BERHENTI RECORDING")
                 self.btn_toggle_rec.setStyleSheet(f"background-color: {COL_BAD}; color: #ffffff; font-weight: bold; font-size: 9px; height: 24px;")
