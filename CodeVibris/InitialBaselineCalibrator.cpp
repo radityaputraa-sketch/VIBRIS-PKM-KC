@@ -23,6 +23,7 @@ bool isLastCalibrationValid() {
     return lastCalibrationValid;
 }
 void startCalibrationPhase() {
+    lastCalibrationValid = false;
     calibrationSampleCount = 0;
     calibrationActive = true;
     Serial.println(F("[Calibrator] Fase kalibrasi dimulai — pastikan mesin dalam kondisi NORMAL."));
@@ -164,6 +165,7 @@ void computeInitialBaseline(float meanOutput[4], float sigmaInverseOutput[4][4])
     }
 
     solveMatrixInverse4x4(rawCovariance, sigmaInverseOutput);
+    lastCalibrationValid = true
     Serial.printf("[Calibrator] Baseline selesai dari %d sample.\n", calibrationSampleCount);
 }
 

@@ -8,6 +8,7 @@
 // bukan representasi RPM asli.
 #define FR_MIN_HZ 5.0
 #define FR_MAX_HZ 50.0
+#define RPM_SNR_MIN_RATIO 3.0f 
 bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snrOut) {
     float freqResolution = sampleRate / n;
     int binMin = (int)(FR_MIN_HZ / freqResolution);
@@ -35,7 +36,7 @@ bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snr
     // WAJIB dikalibrasi ulang pakai data motor nyata kalian — angka 3.0 ini
     // starting point, bukan angka final. Uji: motor mati vs motor nyala,
     // print SNR keduanya, tentukan threshold yang memisahkan dua kondisi jelas.
-    return snr >= 3.0f;
+    return snr >= RPM_SNR_MIN_RATIO;
 }
 float RPM_Estimate(double *magnitude, int n, float sampleRate) {
     // Resolusi frekuensi per bin FFT = sampleRate / jumlah sample.

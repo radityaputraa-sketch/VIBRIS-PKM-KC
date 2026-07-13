@@ -37,7 +37,7 @@ static void TaskFFTProcessor(void *pvParameters) {
 }
 
 void Scheduler_InitTasks() {
-    vibrationQueue = xQueueCreate(2, sizeof(VibrationBuffer));
+    vibrationQueue = xQueueCreate(1, sizeof(VibrationBuffer));
 
     xTaskCreatePinnedToCore(
         TaskFFTProcessor, "Task_FFT", STACK_TASK_FFT, NULL,

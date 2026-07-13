@@ -30,4 +30,6 @@ struct DetectionResult {
     float rpm_estimated;        // Estimasi kecepatan putar mesin hasil analisis spektrum
     float mahalanobis_D2;       // Nilai Jarak Mahalanobis untuk deteksi anomali [cite: 2026-05-06]
     char status_label[16];      // String status: "Normal", "Waspada", atau "Bahaya"
+    char diagnosis_label[20];   // "UNBALANCE" / "MISALIGNMENT" / "BEARING_BPFO" / "BEARING_BPFI" / "NORMAL" / "N/A"
+    float diagnosis_confidence; // Z-score band paling menyimpang
 };

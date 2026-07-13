@@ -1,4 +1,3 @@
-// FFTProcessor.h
 #pragma once
 #include "SharedTypes.h"
 

@@ -25,39 +25,80 @@ void TaskDriverGetaran(void *pvParameters) {
     lis3dhInstance.setRange(LIS3DH_RANGE_4_G);
     lis3dhInstance.setDataRate(LIS3DH_DATARATE_LOWPOWER_5KHZ);  // aktual ~1.25kHz Normal HR mode (bug library #14), tetap 12-bit
 
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xSamplingPeriod = pdMS_TO_TICKS((uint32_t)VIBRATION_SAMPLE_PERIOD_MS);
+    uint32_t nextSampleUs = micros();
 
     const float alpha = 0.98f;
     float filteredMagnitudeOld = 0.0f;
     float rawMagnitudeOld = 0.0f;
     static VibrationBuffer localVibBuffer;
 
+    // Deteksi "sensor macet": kalau I2C gagal baca atau bacaan mentahnya
+    // persis sama berkali-kali berturut-turut, rumus selisih di bawah akan
+    // menghasilkan 0.00 terus meski mesin sebenarnya bergetar. Ini BUKAN
+    // kondisi normal (noise sensor asli tidak pernah benar-benar 0.000000
+    // persis), jadi kita hitung dan laporkan lewat Serial supaya kelihatan
+    // jelas ini masalah sambungan sensor, bukan cuma "mesin diam".
+    int stuckReadingStreak = 0;
+    const int STUCK_WARNING_THRESHOLD = 50; // ~50 sample berturut-turut identik
+    const float SAMPLE_RATE_TOLERANCE = 0.05f; // toleransi 5% dari target
+
     for (;;) {
         sensors_event_t event;
+        uint32_t batchStartUs = micros();
+        int overrunCount = 0;
 
         for (int i = 0; i < FFT_SAMPLES; i++) {
-            lis3dhInstance.getEvent(&event);
+            bool readOk = lis3dhInstance.getEvent(&event);
 
             float ax = event.acceleration.x;
             float ay = event.acceleration.y;
             float az = event.acceleration.z;
 
-            float rawMagnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
+            float rawMagnitude = sqrtf((ax * ax) + (ay * ay) + (az * az));
+
+            if (!readOk || rawMagnitude == rawMagnitudeOld) {
+                stuckReadingStreak++;
+            } else {
+                stuckReadingStreak = 0;
+            }
+
+            if (stuckReadingStreak == STUCK_WARNING_THRESHOLD) {
+                Serial.println(F("[WARNING] Sensor getaran (LIS3DH) kemungkinan MACET: "
+                                  "bacaan I2C sama persis berkali-kali. Cek sambungan "
+                                  "SDA/SCL & solderan modul sensor "));
+            }
+
             float dynamicVibration = alpha * (filteredMagnitudeOld + rawMagnitude - rawMagnitudeOld);
 
             filteredMagnitudeOld = dynamicVibration;
             rawMagnitudeOld = rawMagnitude;
 
             localVibBuffer.samples[i] = dynamicVibration;
-            vTaskDelayUntil(&xLastWakeTime, xSamplingPeriod);
+            nextSampleUs += VIBRATION_SAMPLE_PERIOD_US;
+            if ((int32_t)(micros() - nextSampleUs) >= 0) {
+                overrunCount++;
+            }
+            while ((int32_t)(micros() - nextSampleUs) < 0) {
+                taskYIELD();
+            }
+        }
+        uint32_t batchElapsedUs = micros() - batchStartUs;
+        float actualRateHz = (float)FFT_SAMPLES * 1000000.0f / (float)batchElapsedUs;
+        float rateError = fabsf(actualRateHz - (float)VIBRATION_SAMPLE_RATE_HZ) / (float)VIBRATION_SAMPLE_RATE_HZ;
+
+        if (rateError > SAMPLE_RATE_TOLERANCE || overrunCount > 0) {
+            Serial.printf("[WARNING][DriverGetaran] Target %uHz TIDAK tercapai! Aktual=%.1fHz "
+                          "(%d/%d sample overrun/telat). FFTProcessor tetap menghitung pakai "
+                          "asumsi %uHz -> RPM & band energy BISA MELESET. Turunkan "
+                          "VIBRATION_SAMPLE_RATE_HZ di config.h ke nilai yang tercapai, atau "
+                          "optimasi I2C (naikkan clock/kurangi overhead driver).\n",
+                          VIBRATION_SAMPLE_RATE_HZ, actualRateHz, overrunCount, FFT_SAMPLES,
+                          VIBRATION_SAMPLE_RATE_HZ);
         }
 
         QueueHandle_t q = Scheduler_GetVibrationQueue();
         if (q != NULL) {
-            xQueueSend(q, &localVibBuffer, 0);
+            xQueueOverwrite(q, &localVibBuffer);
         }
-
-        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
