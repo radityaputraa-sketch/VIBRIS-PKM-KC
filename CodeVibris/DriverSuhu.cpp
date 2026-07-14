@@ -7,7 +7,9 @@
 
 // Bus I2C kedua, terpisah dari LIS3DH (yang pakai TwoWire(0) di pin 6/7)
 static TwoWire I2CMlx = TwoWire(1);
-static Adafruit_MLX90614 mlxInstance = Adafruit_MLX90614();
+static Adafruit_MLX90614 mlxInstance = Adafruit_MLX90614();static volatile float g_lastRawTemp = SUHU_DEFAULT_VALID;
+float DriverSuhu_GetLastRawTemp() { return g_lastRawTemp; }
+
 
 void TaskDriverSuhu(void *pvParameters) {
     (void)pvParameters;
@@ -30,6 +32,7 @@ void TaskDriverSuhu(void *pvParameters) {
 
         // FILTER 1: NaN = read I2C gagal / sensor lepas/putus
         if (!isnan(rawTemperature)) {
+            g_lastRawTemp = rawTemperature;
             // FILTER 2: Slew Rate Limiter tetap dipakai, parameter sama persis
             if (abs(rawTemperature - lastValidTemperature) <= SUHU_MAX_DELTA) {
                 lastValidTemperature = rawTemperature;

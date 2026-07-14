@@ -23,6 +23,10 @@
 #include "config.h"
 #include <math.h>
 
+static volatile float g_lastRAWADC = 0.0f
+float DriverArus_GetLastRawADC() {return g_lastRawADC; }
+
+
 // Jumlah sample harus kelipatan bulat SATU SIKLUS AC penuh.
 // Di 50Hz dengan sampling interval 100µs (10kHz):
 //   1 siklus = 10000/50 = 200 sample
@@ -100,7 +104,7 @@ void TaskDriverArus(void *pvParameters) {
 
         float meanSquare      = (float)(sumSquared / ARUS_RMS_SAMPLE_COUNT);
         float rmsADC          = sqrtf(meanSquare);
-
+        g_lastRawADC          = rmsADC;
         // FIX 5: Dokumentasi derivasi konversi
         // rmsADC adalah nilai RMS dalam satuan ADC count (bukan Volt, bukan Ampere).
         // ARUS_CAL_FACTOR mengkonversi langsung ke Ampere.

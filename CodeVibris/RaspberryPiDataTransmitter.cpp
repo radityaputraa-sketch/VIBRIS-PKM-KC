@@ -1,6 +1,9 @@
 // RaspberryPiDataTransmitter.cpp
 #include "RaspberryPiDataTransmitter.h"
 #include <Arduino.h>
+#include "DualCoreTaskScheduler.h"
+#include "DriverArus.h"
+#include "DriverSuhu.h"
 
 void Transmitter_Init(long baudRate) {
     // Tidak perlu Serial1.begin() — Serial (USB) sudah di-init di setup() main.ino
@@ -12,23 +15,26 @@ void Transmitter_Init(long baudRate) {
 }
 
 void Transmitter_SendResult(SensorFeatures features, DetectionResult result) {
-    // Pakai Serial (USB), BUKAN Serial1 — karena kabel fisiknya USB-C ke USB-A,
-    // bukan GPIO UART1 terpisah. Baris ini akan campur dengan baris debug lain
-    // di stream yang sama — itu sudah diantisipasi di parser Python (skip baris non-JSON).
-    float rmsX = 0.0f, rmsZ = 0.0f, rmsY = 0.0f;
+    float rmsX = 0.0f, rmsY = 0.0f, rmsZ = 0.0f;
     Scheduler_GetLatestAxisRMS(&rmsX, &rmsY, &rmsZ);
+
+    float bandEnergies[4];
+    Scheduler_GetLatestBandEnergies(bandEnergies);
+
     Serial.printf(
-        "{\"rms_y\":%.4f,\"rms_x\":%.4f,\"rms_z\":%.4f,\"rms_v\":%.4f,\"rms_a\":%.2f,\"cur\":%.4f,\"temp\":%.2f,"
-        "\"rpm\":%.2f,\"d2\":%.2f,\"status\":\"%s\"}\n",
-        features.rms_getaran,
-        rmsX,
-        rmsY,
-        rmsZ,
-        features.rms_suara,
-        features.arus,
-        features.suhu,
-        result.rpm_estimated,
-        result.mahalanobis_D2,
-        result.status_label
+        "{"
+        "\"rms_v\":%.4f,\"rms_x\":%.4f,\"rms_y\":%.4f,\"rms_z\":%.4f,"
+        "\"rms_a\":%.2f,\"cur\":%.4f,\"cur_raw_adc\":%.2f,"
+        "\"temp\":%.2f,\"temp_raw\":%.2f,"
+        "\"rpm\":%.2f,\"severity\":%.3f,\"status\":\"%s\","
+        "\"e_unbalance\":%.4f,\"e_misalign\":%.4f,\"e_bpfo\":%.4f,\"e_bpfi\":%.4f,"
+        "\"diagnosis\":\"%s\",\"diag_conf\":%.2f"
+        "}\n",
+        features.rms_getaran, rmsX, rmsY, rmsZ,
+        features.rms_suara, features.arus, DriverArus_GetLastRawADC(),
+        features.suhu, DriverSuhu_GetLastRawTemp(),
+        result.rpm_estimated, result.mahalanobis_D2, result.status_label,
+        bandEnergies[0], bandEnergies[1], bandEnergies[2], bandEnergies[3],
+        result.diagnosis_label, result.diagnosis_confidence
     );
 }

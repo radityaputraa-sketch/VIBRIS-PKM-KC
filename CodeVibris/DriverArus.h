@@ -6,5 +6,6 @@
 // ===================================================================
 // PROTOTIPE FUNGSI UTAMA (TASK FREERTOS)
 // ===================================================================
+float DriverArus_GetLastRawADC();
 void TaskDriverArus(void *pvParameters);
 //end DriverArus.h

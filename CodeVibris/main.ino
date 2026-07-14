@@ -8,8 +8,9 @@
 #include "MultiSensorFeatureMerger.h"
 #include "GenericThresholdClassifier.h"
 #include "RaspberryPiDataTransmitter.h"
+#include "DiagnosisClassifier.h"
 
-// Catatan perubahan (biar ketua tim & anggota lain paham kenapa file ini beda
+// Catatan perubahan (biar klean lain paham kenapa file ini beda
 // dari versi sebelumnya):
 // Versi lama menunggu fase KALIBRASI 60 detik (self-baseline + Mahalanobis)
 // sebelum status Normal/Waspada/Bahaya bisa muncul. Di lapangan itu bikin
@@ -38,6 +39,8 @@
 
 static unsigned long bootMillis = 0;
 
+static float bandBaselineMean[4] = {0.20f, 0.20f, 0.20f, 0.20f};
+static float bandBaselineStd[4]  = {0.10f, 0.10f, 0.10f, 0.10f};
 void setup() {
     Transmitter_Init(115200);
     Serial.begin(115200);
@@ -62,6 +65,9 @@ void loop() {
     DetectionResult result{};
     result.rpm_estimated  = Scheduler_GetLatestRPM();
     result.mahalanobis_D2 = 0.0f;
+    strncpy(result.diagnosis_label, "N/A", sizeof(result.diagnosis_label) - 1);
+    result.diagnosis_label[sizeof(result.diagnosis_label) - 1] = '\0';
+    result.diagnosis_confidence = 0.0f;
 
     if (!fresh && stillWarmingUp) {
         // Belum genap 8 detik sejak boot dan sensor belum sempat mengisi
@@ -82,11 +88,21 @@ void loop() {
         const char* label = classifyStatusFixedThreshold(merged, &severity);
         result.mahalanobis_D2 = severity; // dipakai dashboard sebagai skor keparahan pengganti D2
         strncpy(result.status_label, label, sizeof(result.status_label) - 1);
+        result.status_label[sizeof(result.status_label) - 1] = '\0';
         
     }
 
     Transmitter_SendResult(merged, result);
 
+#if DEBUG_BAND_ENERGY_MODE
+        // Nyalakan mode ini SEMENTARA saat mesin dalam kondisi NORMAL untuk
+        // mengumpulkan angka mean & std band energy yang benar. Matikan lagi
+        // (kembalikan ke 0) setelah bandBaselineMean/Std di atas sudah diisi
+        // angka hasil kalibrasi manual.
+        Serial.printf("[BAND_ENERGY] E0=%.4f E1=%.4f E2=%.4f E3=%.4f\n",
+            bandEnergies[0], bandEnergies[1], bandEnergies[2], bandEnergies[3]);
+#endif
+    }
 #if PLOTTER_MODE
     Serial.printf("Suhu:%.2f Arus:%.4f Getaran:%.4f Suara:%.2f Status:%s\n",
         merged.suhu, merged.arus, merged.rms_getaran, merged.rms_suara, result.status_label);

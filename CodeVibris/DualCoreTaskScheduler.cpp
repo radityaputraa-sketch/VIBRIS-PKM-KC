@@ -29,9 +29,9 @@ static void TaskFFTProcessor(void *pvParameters) {
         if (xQueueReceive(vibrationQueue, &incomingBuffer, portMAX_DELAY) == pdTRUE) {
             FFTProcessor_Process(&incomingBuffer, &fftLocalFeatures, &rpmResult, bandEnergies);
             latestRPM = rpmResult;
-            latestRmsX = incomingBuffer.rms_x_raw;   // <-- tambahan
+            latestRmsX = incomingBuffer.rms_x_raw;   // 
             latestRmsZ = incomingBuffer.rms_z_raw;
-            latestRmsY = incomingBuffer.rms_y_raw;   // <-- tambahan
+            latestRmsY = incomingBuffer.rms_y_raw;   //
             for (int i = 0; i < 4; i++) latestBandEnergies[i] = bandEnergies[i];
 
             updateVibrationFeature(fftLocalFeatures.rms_getaran);
@@ -41,8 +41,9 @@ static void TaskFFTProcessor(void *pvParameters) {
         }
     }
 }
-void Scheduler_GetLatestAxisRMS(float *xOut, float *zOut) {
+void Scheduler_GetLatestAxisRMS(float *xOut, float *yOut, float *zOut) {
     *xOut = latestRmsX;
+    *yOut = latestRmsY;
     *zOut = latestRmsZ;
 }
 void Scheduler_InitTasks() {

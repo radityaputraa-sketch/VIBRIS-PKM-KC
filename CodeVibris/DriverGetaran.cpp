@@ -85,8 +85,8 @@ void TaskDriverGetaran(void *pvParameters) {
                 taskYIELD();
             }
         }
-        localVibBuffer.rms_x_raw = sqrtf((float)(sumSqX/FFT_SAMPLES))
-        localVibBuffer.rms_y_raw = sqrtf((float)(sumSqY/FFT_SAMPLES))
+        localVibBuffer.rms_x_raw = sqrtf((float)(sumSqX/FFT_SAMPLES));
+        localVibBuffer.rms_y_raw = sqrtf((float)(sumSqY/FFT_SAMPLES));;
         localVibBuffer.rms_z_raw = sqrtf((float)(sumSqZ/FFT_SAMPLES))
         
         uint32_t batchElapsedUs = micros() - batchStartUs;
