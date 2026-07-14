@@ -36,6 +36,8 @@ const char* classifyStatusFromD2(float d2Value) {
 
 DetectionResult runDetectionCycle() {
     DetectionResult result;
+    static unsigned long baselineReadyTimestamp = 0;
+    static bool wasReady = false;
     result.rpm_estimated = 0.0f;
     result.mahalanobis_D2 = 0.0f;
     result.diagnosis_confidence = 0.0f;
@@ -52,6 +54,10 @@ DetectionResult runDetectionCycle() {
         strncpy(result.status_label, "NotCalibrated", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
         return result;
+    }
+    if (!wasReady) {
+        baselineReadyTimestamp = millis();
+        wasReady = true;
     }
 
     SensorFeatures merged;
@@ -76,7 +82,13 @@ DetectionResult runDetectionCycle() {
     getCurrentBaseline(baselineMean, sigmaInverse);
 
     float d2 = computeMahalanobisQuadraticForm(currentFeatures, baselineMean, sigmaInverse);
-    const char* label = classifyStatusFromD2(d2);
+    const unsigned long GRACE_PERIOD_MS = 120000;
+    float thresholdMultiplier = 1.0f;
+    if (millis() - baselineReadyTimestamp < GRACE_PERIOD_MS) {
+        thresholdMultiplier = 1.5f;
+    }
+    const char* label = classifyStatusFromD2(d2 / thresholdMultiplier);
+    
     bool isNormal = (strcmp(label, "Normal") == 0);
 
     updateBaselineIfNormal(currentFeatures, isNormal);

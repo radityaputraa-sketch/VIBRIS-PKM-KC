@@ -138,7 +138,14 @@ void computeInitialBaseline(float meanOutput[4], float sigmaInverseOutput[4][4])
             rawCovariance[a][b] = (float)(sum / (calibrationSampleCount - 1));
         }
     }
-
+    const float VARIANCE_FLOOR_RATIO = 0.15f;  // minimal 15% dari nilai mean, sbg margin aman
+    for (int f = 0; f < 4; f++) {
+        float minFloor = fabsf(meanOutput[f]) * VARIANCE_FLOOR_RATIO;
+        minFloor = minFloor * minFloor;  // floor dalam satuan variance (kuadrat)
+        if (rawCovariance[f][f] < minFloor) {
+            rawCovariance[f][f] = minFloor;
+        }
+    }
     // GUARD BARU: tolak baseline kalau ada fitur dengan variance mendekati nol.
     // Ini kondisi fisik "device tidak melihat aktivitas nyata" (motor mati/diam),
     // bukan cuma masalah numerik — kalibrasi HARUS diulang dengan mesin aktif.

@@ -56,7 +56,8 @@ void setup() {
     xTaskCreatePinnedToCore(TaskDriverSuhu, "Task_Suhu", STACK_TASK_SUHU, NULL, PRIO_TASK_SUHU, NULL, CORE_SYSTEM_SLOW_IO);
 
     bootMillis = millis();
-    Serial.println(F("[SYSTEM] Boot Complete. Deteksi aktif langsung, TANPA fase kalibrasi."));
+    startCalibrationPhase();
+    Serial.println(F("[SYSTEM] Boot Complete. Memulai fase kalibrasi 60 detik."));
 }
 
 void loop() {
@@ -71,27 +72,35 @@ void loop() {
     result.diagnosis_label[sizeof(result.diagnosis_label) - 1] = '\0';
     result.diagnosis_confidence = 0.0f;
 
+    static int calibSampleCounter = 0;
+    const int CALIB_TARGET_SAMPLES = 60;
+
     if (!fresh && stillWarmingUp) {
-        // Belum genap 8 detik sejak boot dan sensor belum sempat mengisi
-        // buffer pertamanya -> ini wajar, bukan kerusakan.
         strncpy(result.status_label, "Warming", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
     } else if (!fresh) {
-        // Masa toleransi sudah lewat tapi data tetap basi -> sekarang baru
-        // benar dianggap gangguan sensor sungguhan (kabel/sensor bermasalah).
         strncpy(result.status_label, "SensorFault", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
-    } else {
-        // Setiap cycle di sini menilai ULANG kondisi terkini langsung dari
-        // pembacaan sensor saat itu (bukan dari status sebelumnya), jadi
-        // status otomatis menyesuaikan naik/turun mengikuti kondisi nyata
-        // mesin saat itu juga — tidak perlu direset/kalibrasi ulang.
-        float severity = 0.0f;
-        const char* label = classifyStatusFixedThreshold(merged, &severity);
-        result.mahalanobis_D2 = severity; // dipakai dashboard sebagai skor keparahan pengganti D2
-        strncpy(result.status_label, label, sizeof(result.status_label) - 1);
+    } else if (!isBaselineLearnerReady() && calibSampleCounter < CALIB_TARGET_SAMPLES) {
+        if (addCalibrationSample(merged)) {
+            calibSampleCounter++;
+        }
+        strncpy(result.status_label, "Calibrating", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
-        
+    } else if (!isBaselineLearnerReady()) {
+        float mean[4], sigmaInv[4][4];
+        computeInitialBaseline(mean, sigmaInv);
+        if (isLastCalibrationValid()) {
+            initializeBaselineLearner(mean, sigmaInv);
+            saveBaselineToFlash(mean, sigmaInv);
+        } else {
+            calibSampleCounter = 0;
+            startCalibrationPhase();
+        }
+        strncpy(result.status_label, "Calibrating", sizeof(result.status_label) - 1);
+        result.status_label[sizeof(result.status_label) - 1] = '\0';
+    } else {
+        result = runDetectionCycle();
     }
 
     Transmitter_SendResult(merged, result);
