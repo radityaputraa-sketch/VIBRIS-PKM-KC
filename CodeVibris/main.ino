@@ -44,6 +44,8 @@ static unsigned long bootMillis = 0;
 
 static float bandBaselineMean[4] = {0.20f, 0.20f, 0.20f, 0.20f};
 static float bandBaselineStd[4]  = {0.10f, 0.10f, 0.10f, 0.10f};
+#define CALIBRATION_DURATION_MS 180000UL   // 180 detik NYATA (millis()), bukan hitungan sample
+static unsigned long calibrationStartMillis = 0;
 void setup() {
     setDiagnosisBandBaseline(bandBaselineMean, bandBaselineStd);
     Transmitter_Init(115200);
@@ -56,10 +58,11 @@ void setup() {
     xTaskCreatePinnedToCore(TaskDriverGetaran, "Task_Vib", 3072, NULL, PRIO_TASK_VIB, NULL, CORE_DSP_HIGH_SPEED);
     xTaskCreatePinnedToCore(TaskDriverArus,"Task_Arus", STACK_TASK_ARUS,NULL, PRIO_TASK_ARUS, NULL, CORE_SYSTEM_SLOW_IO);
     xTaskCreatePinnedToCore(TaskDriverSuhu, "Task_Suhu", STACK_TASK_SUHU, NULL, PRIO_TASK_SUHU, NULL, CORE_SYSTEM_SLOW_IO);
-
+ 
     bootMillis = millis();
     startCalibrationPhase();
-    Serial.println(F("[SYSTEM] Boot Complete. Memulai fase kalibrasi 60 detik."));
+    calibrationStartMillis = millis();
+    Serial.println(F("[SYSTEM] Boot Complete. Memulai fase kalibrasi self-baseline (180 detik nyata)."));
 }
 
 void loop() {
@@ -74,8 +77,7 @@ void loop() {
     result.diagnosis_label[sizeof(result.diagnosis_label) - 1] = '\0';
     result.diagnosis_confidence = 0.0f;
 
-    static int calibSampleCounter = 0;
-    const int CALIB_TARGET_SAMPLES = 60;
+    bool calibrationTimeUp = (millis() - calibrationStartMillis) >= CALIBRATION_DURATION_MS;
 
     if (!fresh && stillWarmingUp) {
         strncpy(result.status_label, "Warming", sizeof(result.status_label) - 1);
@@ -83,21 +85,39 @@ void loop() {
     } else if (!fresh) {
         strncpy(result.status_label, "SensorFault", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
-    } else if (!isBaselineLearnerReady() && calibSampleCounter < CALIB_TARGET_SAMPLES) {
-        if (addCalibrationSample(merged)) {
-            calibSampleCounter++;
-        }
+    } else if (!isBaselineLearnerReady() && !calibrationTimeUp) {
+        // FIX: gerbang kalibrasi berbasis WAKTU NYATA (millis()), bukan jumlah
+        // sample -- rate loop() terbukti tidak konstan di lapangan. Semua
+        // sample yang berhasil ditangkap dalam jendela 180 detik ini dipakai,
+        // sebanyak apapun jumlahnya (tergantung rate riil setelah fix DriverArus).
+        addCalibrationSample(merged);
+
+        float bandEnergies[4];
+        Scheduler_GetLatestBandEnergies(bandEnergies);
+        addBandEnergyCalibrationSample(bandEnergies);
+
         strncpy(result.status_label, "Calibrating", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
     } else if (!isBaselineLearnerReady()) {
         float mean[4], sigmaInv[4][4];
         computeInitialBaseline(mean, sigmaInv);
+
         if (isLastCalibrationValid()) {
             initializeBaselineLearner(mean, sigmaInv);
             saveBaselineToFlash(mean, sigmaInv);
+
+            // TAMBAHAN: baseline band frekuensi sekarang dihitung dari data
+            // kalibrasi NYATA, bukan placeholder 0.20/0.10 selamanya.
+            float bandMean[4], bandStd[4];
+            computeBandEnergyBaseline(bandMean, bandStd);
+            setDiagnosisBandBaseline(bandMean, bandStd);
+            saveBandBaselineToFlash(bandMean, bandStd);
+
+            Serial.println(F("[SYSTEM] Kalibrasi VALID. Baseline mean/sigma dan band energy siap."));
         } else {
-            calibSampleCounter = 0;
+            Serial.println(F("[SYSTEM] Kalibrasi GAGAL (varians terlalu rendah). Mengulang 180 detik..."));
             startCalibrationPhase();
+            calibrationStartMillis = millis();
         }
         strncpy(result.status_label, "Calibrating", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';

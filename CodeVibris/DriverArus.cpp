@@ -96,11 +96,16 @@ void TaskDriverArus(void *pvParameters) {
 
             sumSquared += (double)(filteredSample * filteredSample);
 
-            // FIX 5: delayMicroseconds adalah busy-wait (tidak yield ke FreeRTOS scheduler).
-            // Ini tidak ideal di FreeRTOS, tapi tidak ada alternatif bersih untuk
-            // interval <1ms tanpa hardware timer terpisah.
-            // Konsekuensi: Core 0 tidak bisa task-switch selama ~60ms window sampling ini.
-            // Pertimbangkan pindah ke Core 1 bersama Suhu jika Core 0 mulai overload.
+        // FIX: delayMicroseconds() busy-wait murni -- Core 1 diblokir total
+        // tanpa context-switch. TaskDriverArus (prioritas 2) berbagi Core 1
+        // dengan loop() Arduino (prioritas default lebih rendah), jadi 600
+        // sample x 100us = 60ms blokir PENUH tiap siklus 100ms bikin loop()
+        // nyaris tidak kebagian CPU. Data lapangan: 1-4 baris/detik, bukan
+        // 10/detik yang diasumsikan TICK_DELAY_REPORT=100ms. Yield 1 tick
+        // tiap 100 sample kasih celah scheduler menjalankan loop() & task lain.
+            if (i % 100 == 99) {
+                vTaskDelay(1);
+            } else {
             delayMicroseconds(100); // 100µs → sample rate 10kHz
         }
 
@@ -120,5 +125,6 @@ void TaskDriverArus(void *pvParameters) {
         updateCurrentFeature(calculatedCurrent);
 
         vTaskDelay(pdMS_TO_TICKS(TICK_DELAY_ARUS));
+        }
     }
 }

@@ -4,9 +4,12 @@
 #include <Preferences.h>
 #include <Arduino.h>
 
-// 60 detik kalibrasi @ ~1 sample/detik (mengikuti TICK_DELAY_REPORT di main.ino)
-// dengan margin ekstra kalau caller manggil lebih sering dari itu.
-#define CALIBRATION_MAX_SAMPLES 120
+// FIX: kalibrasi sekarang digerbang WAKTU (180 detik nyata via millis() di
+// main.ino), bukan jumlah sample -- karena rate loop() terbukti TIDAK
+// konstan (data lapangan: 1-5 sample/detik). Buffer diperbesar supaya
+// cukup menampung sample terbanyak yang mungkin masuk dalam 180 detik,
+// bahkan setelah fix DriverArus.cpp bikin rate naik mendekati 10/detik.
+#define CALIBRATION_MAX_SAMPLES 2000
 
 bool addBandEnergyCalibrationSample(float bandEnergies[4]);
 void computeBandEnergyBaseline(float meanOutput[4], float stdOutput[4]);

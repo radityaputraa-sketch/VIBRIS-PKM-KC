@@ -100,7 +100,14 @@ DetectionResult runDetectionCycle() {
 
     // LAPISAN LANJUTAN: begitu D^2 dihitung, tanya DiagnosisClassifier:
     // menyimpang di band frekuensi MANA (Unbalance/Misalignment/BPFO/BPFI).
-    if (diagBaselineReady) {
+    // FIX: kalau RPM tidak reliable (SNR rendah/motor mati), FFTProcessor
+    // menge-nol-kan bandEnergies -- dan itu SELALU dibaca "NORMAL" oleh
+    // Diagnosis_Classify (z-score energi 0 vs baseline malah negatif, di
+    // bawah ambang). Data lapangan buktikan ini: 766 dari 1020 baris status
+    // "Bahaya" punya diagnosis "NORMAL" bersamaan (rpm=0). Guard di bawah
+    // mencegah label yang diam-diam salah -- kalau sinyal tidak reliable,
+    // diagnosis tetap "N/A" (default), bukan "NORMAL" yang menyesatkan.
+    if (diagBaselineReady && result.rpm_estimated > 0.0f) {
         float bandEnergies[4];
         Scheduler_GetLatestBandEnergies(bandEnergies);
 
