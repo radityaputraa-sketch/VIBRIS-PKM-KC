@@ -79,6 +79,17 @@ void loop() {
 
     bool calibrationTimeUp = (millis() - calibrationStartMillis) >= CALIBRATION_DURATION_MS;
 
+// Baca command sederhana dari Raspberry Pi/laptop: 1 karakter per command
+    if (Serial.available() > 0) {
+        char cmd = Serial.read();
+        if (cmd == 'B') {          // 'B' = mesin ini punya rolling bearing
+            setBearingType(true);
+            Serial.println(F("[CMD] Bearing type: ROLLING"));
+        } else if (cmd == 'N') {   // 'N' = mesin ini bushing/no rolling bearing
+            setBearingType(false);
+            Serial.println(F("[CMD] Bearing type: BUSHING/NONE"));
+        }
+    }
     if (!fresh && stillWarmingUp) {
         strncpy(result.status_label, "Warming", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
@@ -91,6 +102,7 @@ void loop() {
         // sample yang berhasil ditangkap dalam jendela 180 detik ini dipakai,
         // sebanyak apapun jumlahnya (tergantung rate riil setelah fix DriverArus).
         addCalibrationSample(merged);
+        addSNRCalibrationSample(snr); 
 
         float bandEnergies[4];
         Scheduler_GetLatestBandEnergies(bandEnergies);
@@ -112,7 +124,7 @@ void loop() {
             computeBandEnergyBaseline(bandMean, bandStd);
             setDiagnosisBandBaseline(bandMean, bandStd);
             saveBandBaselineToFlash(bandMean, bandStd);
-
+            setRuntimeSNRThreshold(computeSNRThresholdFromCalibration());
             Serial.println(F("[SYSTEM] Kalibrasi VALID. Baseline mean/sigma dan band energy siap."));
         } else {
             Serial.println(F("[SYSTEM] Kalibrasi GAGAL (varians terlalu rendah). Mengulang 180 detik..."));

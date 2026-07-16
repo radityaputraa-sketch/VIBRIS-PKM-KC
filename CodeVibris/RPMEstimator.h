@@ -75,3 +75,7 @@ bisa diestimasi otomatis, harus dicatat manual saat pengujian.
 float RPM_ComputeBPFO(float fr_hz, int n_balls, float d_ball, float D_pitch, float phi_deg);
 float RPM_ComputeBPFI(float fr_hz, int n_balls, float d_ball, float D_pitch, float phi_deg);
 bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snrOut);
+void resetSNRCalibration();
+void addSNRCalibrationSample(float snr);
+float computeSNRThresholdFromCalibration();
+void setRuntimeSNRThreshold(float threshold);

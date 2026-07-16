@@ -36,3 +36,14 @@ struct DetectionResult {
     char diagnosis_label[20];   // "UNBALANCE" / "MISALIGNMENT" / "BEARING_BPFO" / "BEARING_BPFI" / "NORMAL" / "N/A"
     float diagnosis_confidence; // Z-score band paling menyimpang
 };
+
+// Tbearign abangku
+struct BearingSpec {
+    int   n_balls;
+    float d_ball_mm;
+    float D_pitch_mm;
+    float phi_deg;
+};
+
+// Definisikan per jenis mesin di config.h, bukan hardcode di FFTProcessor.cpp
+static BearingSpec currentBearingSpec = {8, 3.5f, 22.0f, 0.0f}; // default, GANTI manual tiap ganti motor uji

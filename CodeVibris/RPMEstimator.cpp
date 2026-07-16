@@ -8,7 +8,33 @@
 // bukan representasi RPM asli.
 #define FR_MIN_HZ 5.0
 #define FR_MAX_HZ 50.0
-#define RPM_SNR_MIN_RATIO 7.0f 
+
+static float g_snrCalibBuffer[200];
+static int   g_snrCalibCount = 0;
+static float g_runtimeSNRThreshold = 3.0f;  // fallback awal sebelum kalibrasi selesai
+
+void resetSNRCalibration() { g_snrCalibCount = 0; }
+
+void addSNRCalibrationSample(float snr) {
+    if (g_snrCalibCount < 200) g_snrCalibBuffer[g_snrCalibCount++] = snr;
+}
+
+float computeSNRThresholdFromCalibration() {
+    if (g_snrCalibCount < 10) return g_runtimeSNRThreshold; // data kurang, pakai fallback
+
+    float sum = 0, sumSq = 0;
+    for (int i = 0; i < g_snrCalibCount; i++) sum += g_snrCalibBuffer[i];
+    float mean = sum / g_snrCalibCount;
+    for (int i = 0; i < g_snrCalibCount; i++) sumSq += (g_snrCalibBuffer[i]-mean)*(g_snrCalibBuffer[i]-mean);
+    float stdDev = sqrt(sumSq / g_snrCalibCount);
+
+    // Threshold = mean SNR saat mesin normal, dikurangi margin 2*std,
+    // tapi tidak boleh di bawah 3.0 (batas minimal biar tetap ada jarak dari noise murni)
+    float threshold = mean - 2.0f * stdDev;
+    return (threshold < 3.0f) ? 3.0f : threshold;
+}
+
+void setRuntimeSNRThreshold(float threshold) { g_runtimeSNRThreshold = threshold; }
 bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snrOut) {
     float freqResolution = sampleRate / n;
     int binMin = (int)(FR_MIN_HZ / freqResolution);
@@ -36,7 +62,9 @@ bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snr
     // WAJIB dikalibrasi ulang pakai data motor nyata kalian — angka 3.0 ini
     // starting point, bukan angka final. Uji: motor mati vs motor nyala,
     // print SNR keduanya, tentukan threshold yang memisahkan dua kondisi jelas.
-    return snr >= RPM_SNR_MIN_RATIO;
+
+    extern float g_runtimeSNRThreshold; // atau lewat getter, sesuaikan struktur kalian
+    return snr >= g_runtimeSNRThreshold;
 }
 float RPM_Estimate(double *magnitude, int n, float sampleRate) {
     // Resolusi frekuensi per bin FFT = sampleRate / jumlah sample.
