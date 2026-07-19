@@ -23,6 +23,12 @@
 #include "config.h"
 #include <math.h>
 
+static volatile float g_lastRawADC = 0.0f;
+float DriverArus_GetLastRawADC() {
+    return g_lastRawADC; 
+}
+
+
 // Jumlah sample harus kelipatan bulat SATU SIKLUS AC penuh.
 // Di 50Hz dengan sampling interval 100µs (10kHz):
 //   1 siklus = 10000/50 = 200 sample
@@ -90,17 +96,22 @@ void TaskDriverArus(void *pvParameters) {
 
             sumSquared += (double)(filteredSample * filteredSample);
 
-            // FIX 5: delayMicroseconds adalah busy-wait (tidak yield ke FreeRTOS scheduler).
-            // Ini tidak ideal di FreeRTOS, tapi tidak ada alternatif bersih untuk
-            // interval <1ms tanpa hardware timer terpisah.
-            // Konsekuensi: Core 0 tidak bisa task-switch selama ~60ms window sampling ini.
-            // Pertimbangkan pindah ke Core 1 bersama Suhu jika Core 0 mulai overload.
+        // FIX: delayMicroseconds() busy-wait murni -- Core 1 diblokir total
+        // tanpa context-switch. TaskDriverArus (prioritas 2) berbagi Core 1
+        // dengan loop() Arduino (prioritas default lebih rendah), jadi 600
+        // sample x 100us = 60ms blokir PENUH tiap siklus 100ms bikin loop()
+        // nyaris tidak kebagian CPU. Data lapangan: 1-4 baris/detik, bukan
+        // 10/detik yang diasumsikan TICK_DELAY_REPORT=100ms. Yield 1 tick
+        // tiap 100 sample kasih celah scheduler menjalankan loop() & task lain.
+            if (i % 100 == 99) {
+                vTaskDelay(1);
+            } else {
             delayMicroseconds(100); // 100µs → sample rate 10kHz
         }
 
         float meanSquare      = (float)(sumSquared / ARUS_RMS_SAMPLE_COUNT);
         float rmsADC          = sqrtf(meanSquare);
-
+        g_lastRawADC          = rmsADC;
         // FIX 5: Dokumentasi derivasi konversi
         // rmsADC adalah nilai RMS dalam satuan ADC count (bukan Volt, bukan Ampere).
         // ARUS_CAL_FACTOR mengkonversi langsung ke Ampere.
@@ -111,8 +122,30 @@ void TaskDriverArus(void *pvParameters) {
             calculatedCurrent = 0.0f;
         }
 
-        updateCurrentFeature(calculatedCurrent);
+        // PERBAIKAN NOISE: EMA (exponential moving average) di OUTPUT akhir,
+        // bukan di sample mentah. HPF di atas sudah benar untuk mengekstrak
+        // sinyal AC 50Hz -- yang masih "noisy" biasanya bukan itu, tapi
+        // FLUKTUASI RMS ANTAR-WINDOW: tiap window cuma 600 sample (3 siklus),
+        // jadi ada variansi statistik alami antar window + noise kuantisasi
+        // ADC ESP32 (yang memang dikenal cukup noisy tanpa oversampling
+        // hardware). EMA di sini meredam lompatan angka antar pembacaan,
+        // membuat grafik di dashboard jauh lebih halus, tanpa mengorbankan
+        // filter AC yang sudah benar di atas.
+        static float smoothedCurrent = 0.0f;
+        static bool smoothedInit = false;
+        const float CURRENT_SMOOTHING_ALPHA = 0.25f; // 0..1: makin kecil makin halus, tapi makin lambat mengikuti perubahan beban nyata
+
+        if (!smoothedInit) {
+            smoothedCurrent = calculatedCurrent;
+            smoothedInit = true;
+        } else {
+            smoothedCurrent = CURRENT_SMOOTHING_ALPHA * calculatedCurrent
+                             + (1.0f - CURRENT_SMOOTHING_ALPHA) * smoothedCurrent;
+        }
+
+        updateCurrentFeature(smoothedCurrent);
 
         vTaskDelay(pdMS_TO_TICKS(TICK_DELAY_ARUS));
+        }
     }
 }
