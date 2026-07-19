@@ -59,13 +59,13 @@ void TaskDriverINM(void *pvParameters) {
                 int32_t cleanSample = i2s_raw_buffer[i] >> 14;
                 
                 // Akumulasi kuadrat sinyal audio untuk kalkulasi daya suara (RMS)
-                sumSquaredValues += (int64_t)(cleanSample * cleanSample);
+                sumSquaredValues += (int64_t)cleanSample * (int64_t)cleanSample;
                 valid_sample_count++;
             }
             
             if (valid_sample_count > 0) {
                 float meanSquare = (float)sumSquaredValues / valid_sample_count;
-                float rmsAudio = sqrt(meanSquare);
+                float rmsAudio = sqrtf(meanSquare);
                 
                 // Amankan penulisan nilai amplitudo suara rata-rata ke shared memory
                 updateAudioFeature(rmsAudio);
@@ -73,6 +73,5 @@ void TaskDriverINM(void *pvParameters) {
         }
         
         // Jeda minimal untuk stabilitas context switching FreeRTOS di Core 0
-        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
