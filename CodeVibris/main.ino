@@ -8,6 +8,7 @@
 #include "MultiSensorFeatureMerger.h"
 #include "GenericThresholdClassifier.h"
 #include "RaspberryPiDataTransmitter.h"
+#include "TinyMLClassifier.h"
 
 // Catatan perubahan (biar ketua tim & anggota lain paham kenapa file ini beda
 // dari versi sebelumnya):
@@ -50,6 +51,8 @@ void setup() {
     xTaskCreatePinnedToCore(TaskDriverArus, "Task_Arus", STACK_TASK_ARUS, NULL, PRIO_TASK_ARUS, NULL, CORE_DSP_HIGH_SPEED);
     xTaskCreatePinnedToCore(TaskDriverSuhu, "Task_Suhu", STACK_TASK_SUHU, NULL, PRIO_TASK_SUHU, NULL, CORE_SYSTEM_SLOW_IO);
 
+    TinyML_Init();
+
     bootMillis = millis();
     Serial.println(F("[SYSTEM] Boot Complete. Deteksi aktif langsung, TANPA fase kalibrasi."));
 }
@@ -62,6 +65,17 @@ void loop() {
     DetectionResult result;
     result.rpm_estimated  = Scheduler_GetLatestRPM();
     result.mahalanobis_D2 = 0.0f;
+    strncpy(result.diagnosis_label, "N/A", sizeof(result.diagnosis_label) - 1);
+    result.diagnosis_confidence = 0.0f;
+
+    // TinyML (Edge Impulse) berjalan di jalur TERPISAH dari status
+    // Normal/Waspada/Bahaya di atas: dia sample sendiri tiap 1 detik dan
+    // baru infer tiap 2 detik (lihat TinyMLClassifier.cpp), jadi aman
+    // dipanggil tiap iterasi loop() walau loop ini sendiri jalan tiap 100ms.
+    TinyML_Update(merged, result.rpm_estimated);
+    strncpy(result.ml_label, TinyML_GetLabel(), sizeof(result.ml_label) - 1);
+    result.ml_label[sizeof(result.ml_label) - 1] = '\0';
+    result.ml_confidence = TinyML_GetConfidence();
 
     if (!fresh && stillWarmingUp) {
         // Belum genap 8 detik sejak boot dan sensor belum sempat mengisi
@@ -91,6 +105,7 @@ void loop() {
     Serial.printf("\n================= TELEMETRI MONITORING =================");
     Serial.printf("\nRPM ESTIMATED : %7.2f RPM", result.rpm_estimated);
     Serial.printf("\nANOMALY STATE : %s (ambang batas generik, tanpa kalibrasi)", result.status_label);
+    Serial.printf("\nTINYML (EI)   : %s (confidence %.2f)", result.ml_label, result.ml_confidence);
     Serial.printf("\n------------------- DATA MENTAH SENSOR -----------------");
     Serial.printf("\nGETARAN (RMS) : %7.4f", merged.rms_getaran);
     Serial.printf("\nSUARA (RMS)   : %7.2f", merged.rms_suara);
