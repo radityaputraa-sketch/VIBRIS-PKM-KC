@@ -58,3 +58,4 @@ frekuensi getaran.
 
 DetectionResult runDetectionCycle();
 const char* classifyStatusFromD2(float d2Value);
+void setDiagnosisBandBaseline(float bandMean[4], float bandStd[4]);
