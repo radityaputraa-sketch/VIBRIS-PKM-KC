@@ -10,6 +10,10 @@ enum FeatureIndex { FEAT_VIBRATION = 0, FEAT_AUDIO = 1, FEAT_CURRENT = 2, FEAT_T
 struct VibrationBuffer {
     float samples[FFT_SAMPLES]; // Array float untuk menampung sampel getaran LIS3DH [cite: 2026-05-06]
     uint32_t timestamp;         // Waktu pengambilan sampel (millis/micros)
+    float rms_x_raw;
+    float rms_y_raw;
+    float rms_z_raw;
+    float actual_rate_hz;       // Sample rate SEBENARNYA yang tercapai batch ini (bukan asumsi config.h)
 };
 
 // ===================================================================
@@ -30,4 +34,8 @@ struct DetectionResult {
     float rpm_estimated;        // Estimasi kecepatan putar mesin hasil analisis spektrum
     float mahalanobis_D2;       // Nilai Jarak Mahalanobis untuk deteksi anomali [cite: 2026-05-06]
     char status_label[16];      // String status: "Normal", "Waspada", atau "Bahaya"
+    char diagnosis_label[20];   // "UNBALANCE" / "MISALIGNMENT" / "BEARING_BPFO" / "BEARING_BPFI" / "NORMAL" / "N/A"
+    float diagnosis_confidence; // Z-score band paling menyimpang
+    char ml_label[16];          // Hasil TinyML Edge Impulse: "hidup1" / "hidup2" / "mati1" / "N/A"
+    float ml_confidence;        // Skor kepercayaan (0..1) label ml_label di atas
 };
