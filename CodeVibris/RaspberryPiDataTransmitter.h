@@ -20,4 +20,3 @@ dan UI di Raspberry Pi memakai dummy data generator, tanpa menunggu
 ESP32 selesai 100%.
 */
 void Transmitter_Init(long baudRate);
-void Transmitter_SendResult(SensorFeatures features, DetectionResult result);

@@ -26,10 +26,12 @@ void TaskDriverGetaran(void *pvParameters) {
     lis3dhInstance.setDataRate(LIS3DH_DATARATE_LOWPOWER_5KHZ);  // aktual ~1.25kHz Normal HR mode (bug library #14), tetap 12-bit
 
     uint32_t nextSampleUs = micros();
-
     const float alpha = 0.98f;
-    float filteredMagnitudeOld = 0.0f;
-    float rawMagnitudeOld = 0.0f;
+    // HPF per-axis (bukan per-magnitude) -- lihat catatan di bawah kenapa
+    // urutan ini penting: filter DC HARUS di masing-masing axis SEBELUM
+    // digabung jadi magnitude, bukan sesudahnya.
+    float filteredXOld = 0.0f, filteredYOld = 0.0f, filteredZOld = 0.0f;
+    float rawXOld = 0.0f, rawYOld = 0.0f, rawZOld = 0.0f;
     static VibrationBuffer localVibBuffer;
 
     // Deteksi "sensor macet": kalau I2C gagal baca atau bacaan mentahnya
@@ -55,23 +57,35 @@ void TaskDriverGetaran(void *pvParameters) {
             float ay = event.acceleration.y;
             float az = event.acceleration.z;
 
+
             float rawMagnitude = sqrtf((ax * ax) + (ay * ay) + (az * az));
+            static float rawMagnitudeOld = 0.0f;
 
             if (!readOk || rawMagnitude == rawMagnitudeOld) {
                 stuckReadingStreak++;
             } else {
                 stuckReadingStreak = 0;
             }
+            rawMagnitudeOld = rawMagnitude;
 
             if (stuckReadingStreak == STUCK_WARNING_THRESHOLD) {
                 Serial.println(F("[WARNING] Sensor getaran (LIS3DH) kemungkinan MACET: "
                                   "bacaan I2C sama persis berkali-kali. Cek sambungan "
                                   "SDA/SCL & solderan modul sensor "));
             }
+            // HPF diterapkan ke MASING-MASING axis (buang bias gravitasi statis
+            // per axis), BARU digabung jadi magnitude -- bukan magnitude dulu
+            // baru difilter (versi lama), karena magnitude yang sudah "disearahkan"
+            // (selalu >=0 hasil sqrt) kalau difilter DC-nya akan mendistorsi
+            // konten frekuensi (potensi harmonik palsu 2x frekuensi asli).
+            float fx = alpha * (filteredXOld + ax - rawXOld);
+            float fy = alpha * (filteredYOld + ay - rawYOld);
+            float fz = alpha * (filteredZOld + az - rawZOld);
+            filteredXOld = fx; rawXOld = ax;
+            filteredYOld = fy; rawYOld = ay;
+            filteredZOld = fz; rawZOld = az;
 
-            float dynamicVibration = alpha * (filteredMagnitudeOld + rawMagnitude - rawMagnitudeOld);
-            filteredMagnitudeOld = dynamicVibration;
-            rawMagnitudeOld = rawMagnitude;
+            float dynamicVibration = sqrtf(fx * fx + fy * fy + fz * fz);
 
             localVibBuffer.samples[i] = dynamicVibration;
 

@@ -43,10 +43,11 @@
 #define PLOTTER_MODE 0
 
 static unsigned long bootMillis = 0;
+static char groundTruthLabel[16] = "NORMAL";
 
 static float bandBaselineMean[4] = {0.20f, 0.20f, 0.20f, 0.20f};
 static float bandBaselineStd[4]  = {0.10f, 0.10f, 0.10f, 0.10f};
-#define CALIBRATION_DURATION_MS 180000UL   // 180 detik NYATA (millis()), bukan hitungan sample
+#define CALIBRATION_DURATION_MS 30000UL   // 180 detik NYATA (millis()), bukan hitungan sample
 static unsigned long calibrationStartMillis = 0;
 void setup() {
     setDiagnosisBandBaseline(bandBaselineMean, bandBaselineStd);
@@ -90,6 +91,30 @@ void loop() {
         } else if (cmd == 'N') {   // 'N' = mesin ini bushing/no rolling bearing
             setBearingType(false);
             Serial.println(F("[CMD] Bearing type: BUSHING/NONE"));
+        } else if (cmd == 'O') {   // 'O' = ground truth OK/normal (kondisi motor asli tanpa fault)
+            strncpy(groundTruthLabel, "NORMAL", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: NORMAL"));
+        } else if (cmd == 'U') {   // 'U' = ground truth unbalance sengaja dipasang
+            strncpy(groundTruthLabel, "UNBALANCE", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: UNBALANCE"));
+        } else if (cmd == 'M') {   // 'M' = ground truth misalignment sengaja dipasang
+            strncpy(groundTruthLabel, "MISALIGNMENT", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: MISALIGNMENT"));
+        } else if (cmd == 'F') {   // 'F' = ground truth bearing fault disimulasikan
+            strncpy(groundTruthLabel, "BEARING_FAULT", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: BEARING_FAULT"));
+        }
+
+        } else if (cmd >= '0' && cmd <= '9') {
+            // Pilih spek bearing dari BEARING_TABLE (lihat SharedTypes.h)
+            // Kirim '0'=6201, '1'=6202 (default), '2'=6203, '3'=6204
+            int idx = cmd - '0';
+            if (idx < (int)BEARING_TABLE_SIZE) {
+                currentBearingSpec = BEARING_TABLE[idx];
+                Serial.printf("[CMD] Bearing spec dipilih: %s\n", currentBearingSpec.label);
+            } else {
+                Serial.println(F("[CMD] Index bearing tidak valid."));
+            }
         }
     }
     if (!fresh && stillWarmingUp) {
@@ -140,7 +165,7 @@ void loop() {
         result = runDetectionCycle();
     }
 
-    Transmitter_SendResult(merged, result);
+    Transmitter_SendResult(merged, groundTruthLabel);
 
 #if DEBUG_BAND_ENERGY_MODE
         // Nyalakan mode ini SEMENTARA saat mesin dalam kondisi NORMAL untuk

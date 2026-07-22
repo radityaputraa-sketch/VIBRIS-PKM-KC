@@ -13,6 +13,9 @@ double vReal[FFT_SAMPLES];
 double vImag[FFT_SAMPLES];
 ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, FFT_SAMPLES, SAMPLE_RATE);
 
+//Definisi Tungaal current beraingspec
+BearingSpec currentBearingSpec = BEARING_TABLE[BEARING_DEFAULT_INDEX];
+
 static bool hasRollingBearing = true;
 
 void setBearingType(bool rollingBearing) {
@@ -88,8 +91,10 @@ void FFTProcessor_Process(VibrationBuffer *input, SensorFeatures *features,
     bandEnergies_out[1] = bandEnergy(vReal, freqRes, 1.9f * fr_hz, 2.1f * fr_hz, FFT_SAMPLES);
 
     if (hasRollingBearing) {
-        float bpfo_hz = RPM_ComputeBPFO(fr_hz, 8, 3.5f, 22.0f, 0.0f);
-        float bpfi_hz = RPM_ComputeBPFI(fr_hz, 8, 3.5f, 22.0f, 0.0f);
+        float bpfo_hz = RPM_ComputeBPFO(fr_hz, currentBearingSpec.n_balls,
+            currentBearingSpec.d_ball_mm, currentBearingSpec.D_pitch_mm, currentBearingSpec.phi_deg);
+        float bpfi_hz = RPM_ComputeBPFI(fr_hz, currentBearingSpec.n_balls,
+            currentBearingSpec.d_ball_mm, currentBearingSpec.D_pitch_mm, currentBearingSpec.phi_deg);
         bandEnergies_out[2] = bandEnergy(vReal, freqRes, 0.9f * bpfo_hz, 1.1f * bpfo_hz, FFT_SAMPLES);
         bandEnergies_out[3] = bandEnergy(vReal, freqRes, 0.9f * bpfi_hz, 1.1f * bpfi_hz, FFT_SAMPLES);
         void setBearingType(bool rollingBearing);

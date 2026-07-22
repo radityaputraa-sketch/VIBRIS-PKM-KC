@@ -13,8 +13,7 @@ void Transmitter_Init(long baudRate) {
     (void)baudRate;
     Serial.println(F("[Transmitter] Mode USB — data dikirim lewat port Serial yang sama dengan debug."));
 }
-
-void Transmitter_SendResult(SensorFeatures features, DetectionResult result) {
+void Transmitter_SendResult(SensorFeatures features, DetectionResult result, const char* groundTruthLabel) {
     float rmsX = 0.0f, rmsY = 0.0f, rmsZ = 0.0f;
     Scheduler_GetLatestAxisRMS(&rmsX, &rmsY, &rmsZ);
 
@@ -33,7 +32,8 @@ void Transmitter_SendResult(SensorFeatures features, DetectionResult result) {
         "\"e_unbalance\":%.4f,\"e_misalign\":%.4f,\"e_bpfo\":%.4f,\"e_bpfi\":%.4f,"
         "\"diagnosis\":\"%s\",\"diag_conf\":%.2f,"
         "\"e_audio_low\":%.4f,\"e_audio_mid\":%.4f,\"e_audio_high\":%.4f,"
-        "\"audio_diagnosis\":\"%s\",\"audio_diag_conf\":%.2f"
+        "\"audio_diagnosis\":\"%s\",\"audio_diag_conf\":%.2f,"
+        "\"ground_truth\":\"%s\""
         "}\n",
         features.rms_getaran, rmsX, rmsY, rmsZ,
         features.rms_suara, features.arus, DriverArus_GetLastRawADC(),
@@ -42,6 +42,8 @@ void Transmitter_SendResult(SensorFeatures features, DetectionResult result) {
         bandEnergies[0], bandEnergies[1], bandEnergies[2], bandEnergies[3],
         result.diagnosis_label, result.diagnosis_confidence,
         audioBandEnergies[0], audioBandEnergies[1], audioBandEnergies[2],
-        result.audio_diagnosis_label, result.audio_diagnosis_confidence
+        result.audio_diagnosis_label, result.audio_diagnosis_confidence,
+        groundTruthLabel
     );
+   );
 }
