@@ -61,7 +61,6 @@ static void TaskFFTProcessor(void *pvParameters) {
                           rpmResult, fftLocalFeatures.rms_getaran, latestRmsX, latestRmsZ, bandEnergies[0], bandEnergies[1]);
         }
     }
-}
 void Scheduler_GetLatestAxisRMS(float *xOut, float *yOut, float *zOut) {
     *xOut = latestRmsX;
     *yOut = latestRmsY;

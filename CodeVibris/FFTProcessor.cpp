@@ -84,7 +84,6 @@ void FFTProcessor_Process(VibrationBuffer *input, SensorFeatures *features,
     float fr_hz = fr_rpm / 60.0;
     float freqRes = effectiveSampleRate / FFT_SAMPLES;
 
-    float freqRes = SAMPLE_RATE / FFT_SAMPLES;
     bandEnergies_out[0] = bandEnergy(vReal, freqRes, 0.9f * fr_hz, 1.1f * fr_hz, FFT_SAMPLES);
     bandEnergies_out[1] = bandEnergy(vReal, freqRes, 1.9f * fr_hz, 2.1f * fr_hz, FFT_SAMPLES);
 
