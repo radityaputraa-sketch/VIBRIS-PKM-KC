@@ -122,28 +122,7 @@ void TaskDriverArus(void *pvParameters) {
             calculatedCurrent = 0.0f;
         }
 
-        // PERBAIKAN NOISE: EMA (exponential moving average) di OUTPUT akhir,
-        // bukan di sample mentah. HPF di atas sudah benar untuk mengekstrak
-        // sinyal AC 50Hz -- yang masih "noisy" biasanya bukan itu, tapi
-        // FLUKTUASI RMS ANTAR-WINDOW: tiap window cuma 600 sample (3 siklus),
-        // jadi ada variansi statistik alami antar window + noise kuantisasi
-        // ADC ESP32 (yang memang dikenal cukup noisy tanpa oversampling
-        // hardware). EMA di sini meredam lompatan angka antar pembacaan,
-        // membuat grafik di dashboard jauh lebih halus, tanpa mengorbankan
-        // filter AC yang sudah benar di atas.
-        static float smoothedCurrent = 0.0f;
-        static bool smoothedInit = false;
-        const float CURRENT_SMOOTHING_ALPHA = 0.25f; // 0..1: makin kecil makin halus, tapi makin lambat mengikuti perubahan beban nyata
-
-        if (!smoothedInit) {
-            smoothedCurrent = calculatedCurrent;
-            smoothedInit = true;
-        } else {
-            smoothedCurrent = CURRENT_SMOOTHING_ALPHA * calculatedCurrent
-                             + (1.0f - CURRENT_SMOOTHING_ALPHA) * smoothedCurrent;
-        }
-
-        updateCurrentFeature(smoothedCurrent);
+        updateCurrentFeature(calculatedCurrent);
 
         vTaskDelay(pdMS_TO_TICKS(TICK_DELAY_ARUS));
         }

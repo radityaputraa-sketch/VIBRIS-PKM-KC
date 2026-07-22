@@ -45,3 +45,5 @@ yang disediakan oleh AdaptiveBaselineLearner.
 */
 
 float computeMahalanobisQuadraticForm(float currentFeatures[4], float baselineMean[4], float sigmaInverse[4][4]);
+void applyShrinkageRegularization(float covariance[4][4]);
+bool checkMatrixWellConditioned(float covariance[4][4]);

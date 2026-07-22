@@ -1,4 +1,4 @@
-=// AdaptiveBaselineLearner.h
+// AdaptiveBaselineLearner.h
 #pragma once
 #include "SharedTypes.h"
 
@@ -25,7 +25,20 @@ diperbarui sedikit demi sedikit mengikuti data terbaru, dengan
 bobot kecil (learning rate) supaya perubahan berjalan pelan dan
 tidak reaktif terhadap noise sesaat.
 
-ATURAN PALING PENTING DI MODUL INI:
+PERUBAHAN DARI VERSI SEBELUMNYA -- STD-DEV SEKARANG IKUT ADAPTIF:
+Versi lama menstandardisasi fitur pakai featureStdDev STATIS dari
+InitialBaselineCalibrator (dihitung sekali di kalibrasi awal 180
+detik, lalu beku selamanya), padahal mean & kovarians di modul ini
+terus bergerak lewat EMA. Itu inkonsisten: dua komponen yang
+seharusnya bergerak bersama (skala vs korelasi antar-fitur) malah
+satu beku satu berjalan. Sekarang updateBaselineIfNormal() menerima
+fitur RAW (bukan yang sudah distandardisasi dari luar), dan modul
+ini sendiri yang men-standardisasi pakai std-dev yang IKUT di-EMA,
+lihat getCurrentStdDev(). featureStdDev dari InitialBaselineCalibrator
+tetap dipakai, tapi HANYA sebagai nilai awal (seed) di
+initializeBaselineLearner(), bukan dipakai terus-menerus di runtime.
+
+ATURAN PALING PENTING DI MODUL INI (TIDAK BERUBAH):
 Baseline hanya diperbarui kalau status deteksi saat itu adalah
 Normal. Kalau sistem sedang mendeteksi kondisi Waspada atau
 Bahaya, update baseline tidak dilakukan. Ini untuk mencegah
@@ -43,6 +56,19 @@ sample, sementara mu dan Sigma mentah tetap diperbarui setiap
 siklus.
 */
 bool isBaselineLearnerReady();
-void initializeBaselineLearner(float initialMean[4], float initialSigma[4][4]);
-void updateBaselineIfNormal(float currentFeatures[4], bool isCurrentStatusNormal);
+
+// UBAH: tambah parameter initialStd[4] -- nilai awal std-dev per fitur
+// (dari getFeatureStdDev() di InitialBaselineCalibrator), dipakai sebagai
+// seed EMA, bukan dipakai statis selamanya.
+void initializeBaselineLearner(float initialMean[4], float initialStd[4], float initialSigmaInverse[4][4]);
+
+// UBAH: parameter sekarang fitur RAW (belum distandardisasi), bukan
+// currentFeaturesStd seperti versi lama -- standardisasi terjadi DI DALAM
+// fungsi ini memakai std-dev adaptif terkini.
+void updateBaselineIfNormal(float currentRawFeatures[4], bool isCurrentStatusNormal);
+
 void getCurrentBaseline(float meanOutput[4], float sigmaInverseOutput[4][4]);
+
+// BARU: getter std-dev adaptif, dipanggil MahalanobisDetector.cpp untuk
+// menstandardisasi fitur real-time -- gantikan getFeatureStdDev() statis.
+void getCurrentStdDev(float stdOutput[4]);

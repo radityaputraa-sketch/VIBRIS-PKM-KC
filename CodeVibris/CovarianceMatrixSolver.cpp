@@ -7,6 +7,7 @@
 // hasil presisi penuh tanpa distorsi regularisasi yang tidak perlu.
 #define PIVOT_MIN_THRESHOLD   1e-6f
 #define PIVOT_REGULARIZATION  1e-4f
+#define SHRINKAGE_ALPHA 0.15f
 
 void solveMatrixInverse4x4(float inputMatrix[4][4], float outputInverse[4][4]) {
     float augmented[4][8];
@@ -91,4 +92,23 @@ float computeMahalanobisQuadraticForm(float currentFeatures[4], float baselineMe
     }
 
     return d2;
+}
+void applyShrinkageRegularization(float covariance[4][4]) {
+    float traceAvg = (covariance[0][0] + covariance[1][1] + covariance[2][2] + covariance[3][3]) / 4.0f;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            float target = (i == j) ? traceAvg : 0.0f;
+            covariance[i][j] = (1.0f - SHRINKAGE_ALPHA) * covariance[i][j] + SHRINKAGE_ALPHA * target;
+        }
+    }
+}
+
+bool checkMatrixWellConditioned(float covariance[4][4]) {
+    for (int i = 0; i < 4; i++) {
+        if (covariance[i][i] < 0.5f || covariance[i][i] > 2.0f) return false;
+    }
+    for (int i = 0; i < 4; i++)
+        for (int j = i + 1; j < 4; j++)
+            if (fabsf(covariance[i][j]) > 0.98f) return false;
+    return true;
 }

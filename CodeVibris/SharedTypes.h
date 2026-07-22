@@ -13,7 +13,11 @@ struct VibrationBuffer {
     float rms_x_raw;
     float rms_y_raw;
     float rms_z_raw;
-    float actual_rate_hz;       // Sample rate SEBENARNYA yang tercapai batch ini (bukan asumsi config.h)
+    float actual_rate_hz;
+};
+struct AudioBuffer {
+    float samples[AUDIO_FFT_SAMPLES];
+    uint32_t timestamp;
 };
 
 // ===================================================================
@@ -36,6 +40,27 @@ struct DetectionResult {
     char status_label[16];      // String status: "Normal", "Waspada", atau "Bahaya"
     char diagnosis_label[20];   // "UNBALANCE" / "MISALIGNMENT" / "BEARING_BPFO" / "BEARING_BPFI" / "NORMAL" / "N/A"
     float diagnosis_confidence; // Z-score band paling menyimpang
-    char ml_label[16];          // Hasil TinyML Edge Impulse: "hidup1" / "hidup2" / "mati1" / "N/A"
-    float ml_confidence;        // Skor kepercayaan (0..1) label ml_label di atas
+    char audio_diagnosis_label[20];      // BARU
+    float audio_diagnosis_confidence;
 };
+
+// Tbearign abangku
+struct BearingSpec {
+    int   n_balls;
+    float d_ball_mm;
+    float D_pitch_mm;
+    float phi_deg;
+    const char* label;
+};
+
+// Tabel bearing umum (approksimasi Pd = rata-rata bore+OD, Bd dari referensi
+// umum seri 62xx -- BUKAN data pabrikan presisi. Verifikasi manual pakai
+// jangka sorong kalau butuh akurasi tinggi untuk laporan resmi).
+// Spek bearing motor uji aktif: 6202 (drive end) & 6202/6201 (non-drive end),
+// umum untuk dinamo 1-fasa 4-pole 1/4HP. Ganti angka ini kalau motor uji diganti.
+static const BearingSpec ACTIVE_BEARING_SPEC = {8, 6.35f, 25.0f, 0.0f, "6202 (15x35x11)"};
+
+// PENTING: bukan 'static' -- ini DIDEKLARASIKAN di sini, tapi
+// DIDEFINISIKAN cuma sekali di FFTProcessor.cpp (lihat FIX 2).
+// Supaya semua file (main.ino, FFTProcessor.cpp) pegang variabel YANG SAMA.
+extern BearingSpec currentBearingSpec;

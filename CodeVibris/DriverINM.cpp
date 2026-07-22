@@ -4,6 +4,7 @@
 #include <driver/i2s.h>
 #include <math.h>
 #include "MultiSensorFeatureMerger.h"
+#include "DualCoreTaskScheduler.h"   // BARU
 
 /**
  * @brief Eksekusi Pembacaan Stream Audio INMP441 via I2S DMA
@@ -43,6 +44,7 @@ void TaskDriverINM(void *pvParameters) {
     static int32_t i2s_raw_buffer[1024]; 
     size_t bytes_read = 0;
 
+    static AudioBuffer localAudioBuffer;   // BARU
     for (;;) {
         // Block-state: Task ditidurkan secara total oleh OS sampai buffer DMA hardware terisi penuh
         i2s_read(I2S_NUM_0, &i2s_raw_buffer, sizeof(i2s_raw_buffer), &bytes_read, portMAX_DELAY);
@@ -61,6 +63,10 @@ void TaskDriverINM(void *pvParameters) {
                 // Akumulasi kuadrat sinyal audio untuk kalkulasi daya suara (RMS)
                 sumSquaredValues += (int64_t)cleanSample * (int64_t)cleanSample;
                 valid_sample_count++;
+
+                if (i < AUDIO_FFT_SAMPLES) {
+                    localAudioBuffer.samples[i] = (float)cleanSample;  
+                }
             }
             
             if (valid_sample_count > 0) {
@@ -69,6 +75,9 @@ void TaskDriverINM(void *pvParameters) {
                 
                 // Amankan penulisan nilai amplitudo suara rata-rata ke shared memory
                 updateAudioFeature(rmsAudio);
+                localAudioBuffer.timestamp = millis();
+                QueueHandle_t aq = Scheduler_GetAudioQueue();
+                if (aq != NULL) xQueueOverwrite(aq, &localAudioBuffer);
             }
         }
         
