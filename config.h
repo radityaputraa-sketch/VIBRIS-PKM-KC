@@ -53,7 +53,7 @@
 #define FFT_SAMPLES          256     // Jumlah sampel FFT getaran (Kunci lintas file)
 // Sistem Monitoring Configuration
 #define TICK_DELAY_REPORT    100   // Interval Serial Print pelaporan data (ms)
-#define VIBRATION_SAMPLE_RATE_HZ 500U
+#define VIBRATION_SAMPLE_RATE_HZ 400U
 #define VIBRATION_SAMPLE_PERIOD_US \
     (1000000UL / VIBRATION_SAMPLE_RATE_HZ)
 

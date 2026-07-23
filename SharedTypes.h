@@ -13,6 +13,7 @@ struct VibrationBuffer {
     float rms_x_raw;
     float rms_y_raw;
     float rms_z_raw;
+    float actual_rate_hz;
 };
 struct AudioBuffer {
     float samples[AUDIO_FFT_SAMPLES];
@@ -41,7 +42,7 @@ struct DetectionResult {
     float diagnosis_confidence; // Z-score band paling menyimpang
     char audio_diagnosis_label[20];      // BARU
     float audio_diagnosis_confidence;
-}
+};
 
 // Tbearign abangku
 struct BearingSpec {
@@ -49,7 +50,17 @@ struct BearingSpec {
     float d_ball_mm;
     float D_pitch_mm;
     float phi_deg;
+    const char* label;
 };
 
-// Definisikan per jenis mesin di config.h, bukan hardcode di FFTProcessor.cpp
-static BearingSpec currentBearingSpec = {8, 3.5f, 22.0f, 0.0f}; // default, GANTI manual tiap ganti motor uji
+// Tabel bearing umum (approksimasi Pd = rata-rata bore+OD, Bd dari referensi
+// umum seri 62xx -- BUKAN data pabrikan presisi. Verifikasi manual pakai
+// jangka sorong kalau butuh akurasi tinggi untuk laporan resmi).
+// Spek bearing motor uji aktif: 6202 (drive end) & 6202/6201 (non-drive end),
+// umum untuk dinamo 1-fasa 4-pole 1/4HP. Ganti angka ini kalau motor uji diganti.
+static const BearingSpec ACTIVE_BEARING_SPEC = {8, 6.35f, 25.0f, 0.0f, "6202 (15x35x11)"};
+
+// PENTING: bukan 'static' -- ini DIDEKLARASIKAN di sini, tapi
+// DIDEFINISIKAN cuma sekali di FFTProcessor.cpp (lihat FIX 2).
+// Supaya semua file (main.ino, FFTProcessor.cpp) pegang variabel YANG SAMA.
+extern BearingSpec currentBearingSpec;

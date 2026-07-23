@@ -1,4 +1,4 @@
-// GenericThresholdClassifier.cpp
+// GenericThresholdClassifier.cpp - tidak dipakai
 #include "GenericThresholdClassifier.h"
 #include <string.h>
 

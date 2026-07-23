@@ -30,10 +30,14 @@ static float audioBandEnergy(double *magnitude, float freqResolution,
     int binLow  = (int)(f_low / freqResolution);
     int binHigh = (int)(f_high / freqResolution);
     float energy = 0;
-    for (int i = binLow; i <= binHigh && i < n / 2; i++) {
-        energy += magnitude[i] * magnitude[i];
+    double energySum = 0;
+    int binCount = 0;
+    for (int i = binLow; i <= binHigh; i++) {
+        energySum += magnitude[i] * magnitude[i];
+        binCount++;
     }
-    return energy;
+    if (binCount == 0) return 0.0f;
+    return (float)(energySum / binCount);
 }
 
 void DriverAudioFFTProcessor_Process(AudioBuffer *input, float *bandEnergies_out) {
@@ -49,6 +53,9 @@ void DriverAudioFFTProcessor_Process(AudioBuffer *input, float *bandEnergies_out
     audioFFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
     audioFFT.compute(FFTDirection::Forward);
     audioFFT.complexToMagnitude();
+    for (int i = 0; i < AUDIO_FFT_SAMPLES / 2; i++) {
+    aReal[i] = aReal[i] / (double)AUDIO_FFT_SAMPLES;
+}
 
     float freqRes = (float)AUDIO_SAMPLE_RATE / AUDIO_FFT_SAMPLES;
 

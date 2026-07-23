@@ -43,10 +43,11 @@
 #define PLOTTER_MODE 0
 
 static unsigned long bootMillis = 0;
+static char groundTruthLabel[16] = "NORMAL";
 
 static float bandBaselineMean[4] = {0.20f, 0.20f, 0.20f, 0.20f};
 static float bandBaselineStd[4]  = {0.10f, 0.10f, 0.10f, 0.10f};
-#define CALIBRATION_DURATION_MS 180000UL   // 180 detik NYATA (millis()), bukan hitungan sample
+#define CALIBRATION_DURATION_MS 30000UL   // 30 detik NYATA (millis()), bukan hitungan sample
 static unsigned long calibrationStartMillis = 0;
 void setup() {
     setDiagnosisBandBaseline(bandBaselineMean, bandBaselineStd);
@@ -90,6 +91,18 @@ void loop() {
         } else if (cmd == 'N') {   // 'N' = mesin ini bushing/no rolling bearing
             setBearingType(false);
             Serial.println(F("[CMD] Bearing type: BUSHING/NONE"));
+        } else if (cmd == 'O') {   // 'O' = ground truth OK/normal (kondisi motor asli tanpa fault)
+            strncpy(groundTruthLabel, "NORMAL", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: NORMAL"));
+        } else if (cmd == 'U') {   // 'U' = ground truth unbalance sengaja dipasang
+            strncpy(groundTruthLabel, "UNBALANCE", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: UNBALANCE"));
+        } else if (cmd == 'M') {   // 'M' = ground truth misalignment sengaja dipasang
+            strncpy(groundTruthLabel, "MISALIGNMENT", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: MISALIGNMENT"));
+        } else if (cmd == 'F') {   // 'F' = ground truth bearing fault disimulasikan
+            strncpy(groundTruthLabel, "BEARING_FAULT", sizeof(groundTruthLabel) - 1);
+            Serial.println(F("[TEST] Ground truth: BEARING_FAULT"));
         }
     }
     if (!fresh && stillWarmingUp) {
@@ -140,7 +153,7 @@ void loop() {
         result = runDetectionCycle();
     }
 
-    Transmitter_SendResult(merged, result);
+    Transmitter_SendResult(merged, result, groundTruthLabel);
 
 #if DEBUG_BAND_ENERGY_MODE
         // Nyalakan mode ini SEMENTARA saat mesin dalam kondisi NORMAL untuk
@@ -156,7 +169,7 @@ void loop() {
 #else
     Serial.printf("\n================= TELEMETRI MONITORING =================");
     Serial.printf("\nRPM ESTIMATED : %7.2f RPM", result.rpm_estimated);
-    Serial.printf("\nANOMALY STATE : %s (ambang batas generik, tanpa kalibrasi)", result.status_label);
+    Serial.printf("\nANOMALY STATE : %s (Mahalanobis D2=%.3f, baseline self-calibrated)", result.status_label, result.mahalanobis_D2);
     Serial.printf("\n------------------- DATA MENTAH SENSOR -----------------");
     Serial.printf("\nGETARAN (RMS) : %7.4f", merged.rms_getaran);
     Serial.printf("\nSUARA (RMS)   : %7.2f", merged.rms_suara);

@@ -1,6 +1,7 @@
 #include "RPMEstimator.h"
 #include <math.h>
 #include <Arduino.h>
+#include <algorithm>
 
 // Batas rentang RPM motor kecil sesuai proposal (300-3000 RPM = 5-50 Hz)
 // Di luar rentang ini diabaikan supaya nggak salah tangkap noise frekuensi
@@ -11,8 +12,15 @@
 
 static float g_snrCalibBuffer[200];
 static int   g_snrCalibCount = 0;
-static float g_runtimeSNRThreshold = 6.0f;  // fallback awal sebelum kalibrasi selesai
-
+static float g_runtimeSNRThreshold = 2.5f;  // fallback awal -- disesuaikan dari data SNR
+                                              // real motor uji (konsisten 2.1-4.9 di 2 sesi
+                                              // logging terakhir), BUKAN tebakan. Nilai lama
+                                              // (6.0) gak pernah kelewatan oleh SNR asli motor
+                                              // ini, jadi RPM SELALU 0 sepanjang fase kalibrasi
+                                              // -> baseline band-energy selalu dilatih dari
+                                              // data nol. Threshold final tetap dihitung ulang
+                                              // otomatis dari data kalibrasi setelah fase ini
+                                              // selesai (lihat computeSNRThresholdFromCalibration).
 void resetSNRCalibration() { g_snrCalibCount = 0; }
 
 void addSNRCalibrationSample(float snr) {
@@ -45,14 +53,21 @@ bool RPM_IsSignalReliable(double *magnitude, int n, float sampleRate, float *snr
         if (magnitude[i] > peakAmp) peakAmp = magnitude[i];
     }
 
-    // Noise floor: median-ish estimate pakai rata-rata bin DI LUAR rentang RPM plausible
-    // (bin sangat rendah + sangat tinggi), representasi noise dasar sensor.
-    double noiseSum = 0;
+    // PERBAIKAN: median, bukan rata-rata. Harmonik motor kuat (2x/3x RPM,
+    // blade-pass) yang jatuh di luar 5-50Hz menaikkan rata-rata sehingga SNR
+    // malah jatuh saat sinyal rotasi asli kuat. Median tahan terhadap outlier itu.
+    static double noiseSamples[256];
     int noiseCount = 0;
-    for (int i = 1; i < binMin; i++) { noiseSum += magnitude[i]; noiseCount++; }
-    for (int i = binMax + 1; i < n / 2; i++) { noiseSum += magnitude[i]; noiseCount++; }
-    float noiseFloor = (noiseCount > 0) ? (float)(noiseSum / noiseCount) : 1.0f;
-    if (noiseFloor < 1e-6f) noiseFloor = 1e-6f;
+    for (int i = 1; i < binMin && noiseCount < 256; i++) noiseSamples[noiseCount++] = magnitude[i];
+    for (int i = binMax + 1; i < n / 2 && noiseCount < 256; i++) noiseSamples[noiseCount++] = magnitude[i];
+
+    float noiseFloor = 1e-6f;
+    if (noiseCount > 0) {
+        std::sort(noiseSamples, noiseSamples + noiseCount);
+        noiseFloor = (float)noiseSamples[noiseCount / 2];
+        if (noiseFloor < 1e-6f) noiseFloor = 1e-6f;
+    }
+
 
     float snr = peakAmp / noiseFloor;
     if (snrOut != NULL) *snrOut = snr;
@@ -96,20 +111,18 @@ float RPM_Estimate(double *magnitude, int n, float sampleRate) {
 
     // Konversi index bin balik ke frekuensi (Hz), lalu ke RPM (x60)
     float refinedBin = (float)maxBinIndex;
-    if (maxBinIndex > 0 && maxBinIndex < n / 2 - 1) {
-        float yLeft   = magnitude[maxBinIndex - 1];
-        float yCenter = magnitude[maxBinIndex];
-        float yRight  = magnitude[maxBinIndex + 1];
-        float denom = (yLeft - 2.0f * yCenter + yRight);
-        if (fabsf(denom) > 1e-9f) {
-            float p = 0.5f * (yLeft - yRight) / denom;
-            if (p > -1.0f && p < 1.0f) {
+        if (maxBinIndex > 0 && maxBinIndex < (n / 2) - 1) {
+            float alpha = (float)magnitude[maxBinIndex - 1];
+            float beta  = (float)magnitude[maxBinIndex];
+            float gamma = (float)magnitude[maxBinIndex + 1];
+            float denom = (alpha - 2.0f * beta + gamma);
+            if (fabsf(denom) > 1e-9f) {
+                float p = 0.5f * (alpha - gamma) / denom;
                 refinedBin = (float)maxBinIndex + p;
             }
         }
-    }
-    float fr_hz = refinedBin * freqResolution;
-    return fr_hz * 60.0;
+        float fr_hz = refinedBin * freqResolution;
+        return fr_hz * 60.0;
 }
 float RPM_ComputeBPFO(float fr_hz, int n_balls, float d_ball, float D_pitch, float phi_deg) {
     float phi_rad = phi_deg * (PI / 180.0f);
