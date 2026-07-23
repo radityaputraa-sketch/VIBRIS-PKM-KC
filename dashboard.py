@@ -14,12 +14,22 @@ try:
 except ImportError:
     serial = None
 
+# Import openpyxl untuk fitur "Export ke Excel" (opsional; kalau belum
+# terinstall, tombol export akan menampilkan pesan cara install-nya alih-alih
+# bikin program crash)
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+except ImportError:
+    openpyxl = None
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QHBoxLayout, QVBoxLayout,
     QGridLayout, QStackedWidget, QFrame, QListWidget, QComboBox, QMessageBox,
     QSlider, QDialog
 )
 from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QFont
 import pyqtgraph as pg
 
 # ===================== KONFIGURASI OPERASIONAL =====================
@@ -59,244 +69,6 @@ D2_THRESHOLD_BAHAYA = 13.28   # chi-square, df=4, confidence 99%
 # Urutan tingkat keparahan status, dipakai buat menentukan "Kondisi Terparah" per sesi
 STATUS_SEVERITY = {"normal": 0, "waspada": 1, "bahaya": 2}
 
-class LogDetailDialog(QDialog):
-    """
-    Panel baru (jendela terpisah) yang muncul begitu sebuah file rekaman (.csv) di klik
-    pada daftar Logs & Saves. Menampilkan grafik hasil deteksi (Vibration, Sound, Current,
-    Temp) beserta status diagnosa ringkas dari seluruh sesi rekaman tersebut, dan dilengkapi
-    kontrol Play/Pause/Speed/Slider mandiri untuk memutar ulang datanya secara animasi.
-    """
-    def __init__(self, filepath, filename, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Hasil Deteksi - {filename}")
-        self.resize(950, 620)
-        self.setStyleSheet(f"background-color: {COL_BG_MAIN}; color: {COL_TEXT_LIGHT}; font-family: Arial;")
-
-        # Memuat seluruh isi berkas CSV rekaman ke dalam list data
-        self.times, self.v_vals, self.a_vals, self.cur_vals, self.t_vals = self._load_csv(filepath)
-
-        # State animasi playback milik panel ini sendiri (terpisah dari dashboard utama)
-        self.play_index = 0
-        self.play_speed = 1.0
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self._step)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
-
-        title_lbl = QLabel(f"HASIL DETEKSI REKAMAN: {filename}")
-        title_lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
-        root.addWidget(title_lbl)
-
-        # ===== GRID 4 GRAFIK (GAYA SAMA DENGAN TAB RAW READING) =====
-        grid = QGridLayout()
-        grid.setSpacing(4)
-        pg.setConfigOptions(antialias=True)
-
-        self.graph_v = pg.PlotWidget(title="Vibration (G)")
-        self.graph_v.setBackground(COL_PANEL_DARK)
-        self.graph_v.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_v = self.graph_v.plot(pen=pg.mkPen('#ff4d4d', width=1.5))
-        grid.addWidget(self.graph_v, 0, 0)
-
-        self.graph_a = pg.PlotWidget(title="Sound (dB)")
-        self.graph_a.setBackground(COL_PANEL_DARK)
-        self.graph_a.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_a = self.graph_a.plot(pen=pg.mkPen('#4da6ff', width=1.5))
-        grid.addWidget(self.graph_a, 0, 1)
-
-        self.graph_cur = pg.PlotWidget(title="Current (A)")
-        self.graph_cur.setBackground(COL_PANEL_DARK)
-        self.graph_cur.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_cur = self.graph_cur.plot(pen=pg.mkPen('#ffeb3b', width=1.5))
-        grid.addWidget(self.graph_cur, 1, 0)
-
-        self.graph_temp = pg.PlotWidget(title="Temp (°C)")
-        self.graph_temp.setBackground(COL_PANEL_DARK)
-        self.graph_temp.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_temp = self.graph_temp.plot(pen=pg.mkPen('#e040fb', width=1.5))
-        grid.addWidget(self.graph_temp, 1, 1)
-
-        root.addLayout(grid, 1)
-
-        # ===== PANEL STATUS DIAGNOSA HASIL REKAMAN =====
-        self.box_diagnosis = QFrame()
-        self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 1px solid #444; border-radius: 6px;")
-        box_lay = QVBoxLayout(self.box_diagnosis)
-        box_lay.setContentsMargins(6, 4, 6, 4)
-
-        self.lbl_diag_status = QLabel("STATUS: -")
-        self.lbl_diag_status.setAlignment(Qt.AlignCenter)
-        self.lbl_diag_status.setStyleSheet("font-size: 12px; font-weight: bold;")
-        box_lay.addWidget(self.lbl_diag_status)
-
-        self.lbl_diag_desc = QLabel("")
-        self.lbl_diag_desc.setWordWrap(True)
-        self.lbl_diag_desc.setStyleSheet("font-size: 9px; color: #ccc;")
-        box_lay.addWidget(self.lbl_diag_desc)
-
-        self.lbl_diag_peak = QLabel("")
-        self.lbl_diag_peak.setStyleSheet("font-size: 9px; color: #aaa;")
-        box_lay.addWidget(self.lbl_diag_peak)
-
-        root.addWidget(self.box_diagnosis)
-
-        # ===== KONTROL PLAYBACK MANDIRI (PLAY/PAUSE, SPEED, SLIDER) =====
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(4)
-
-        self.btn_play_pause = QPushButton("▶ PLAY")
-        self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["0.5x", "1x", "2x", "4x"])
-        self.speed_combo.setCurrentIndex(1)
-        self.btn_close = QPushButton("TUTUP PANEL")
-
-        self.btn_play_pause.setStyleSheet("background-color: #cfcfcf; color: #000000; font-weight: bold; font-size: 9px; height: 26px; border-radius: 4px;")
-        self.btn_close.setStyleSheet(f"background-color: {COL_BAD}; color: #ffffff; font-weight: bold; font-size: 9px; height: 26px; border-radius: 4px;")
-        self.speed_combo.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 9px; padding: 2px;")
-
-        self.btn_play_pause.clicked.connect(self._toggle_play)
-        self.speed_combo.currentIndexChanged.connect(self._change_speed)
-        self.btn_close.clicked.connect(self.close)
-
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimum(0)
-        self.slider.setMaximum(max(0, len(self.times) - 1))
-        self.slider.sliderMoved.connect(self._seek)
-
-        self.lbl_pos = QLabel(f"{len(self.times)} / {len(self.times)}" if self.times else "0 / 0")
-        self.lbl_pos.setStyleSheet("font-size: 8px; color: #aaa;")
-
-        ctrl.addWidget(self.btn_play_pause, 2)
-        ctrl.addWidget(self.speed_combo, 1)
-        ctrl.addWidget(self.slider, 5)
-        ctrl.addWidget(self.lbl_pos, 1)
-        ctrl.addWidget(self.btn_close, 2)
-        root.addLayout(ctrl)
-
-        # Tampilan awal: seluruh grafik rekaman langsung terlihat penuh (overview),
-        # sekaligus status diagnosa hasil deteksi dari sesi rekaman ini.
-        self._render_full_overview()
-        self._render_diagnosis_summary()
-
-    def _load_csv(self, filepath):
-        """Membaca seluruh isi berkas CSV rekaman menjadi list per kolom sensor."""
-        times, v_vals, a_vals, cur_vals, t_vals = [], [], [], [], []
-        try:
-            with open(filepath, 'r') as f:
-                reader = csv.reader(f)
-                next(reader)  # lewati baris header
-                for i, row in enumerate(reader):
-                    times.append(i)
-                    v_vals.append(float(row[2]))
-                    a_vals.append(float(row[3]))
-                    cur_vals.append(float(row[4]))
-                    t_vals.append(float(row[5]))
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Gagal membaca berkas rekaman: {e}")
-        return times, v_vals, a_vals, cur_vals, t_vals
-
-    def _render_full_overview(self):
-        """Menampilkan seluruh isi rekaman sekaligus di grafik (tampilan hasil deteksi penuh)."""
-        self.curve_v.setData(self.times, self.v_vals)
-        self.curve_a.setData(self.times, self.a_vals)
-        self.curve_cur.setData(self.times, self.cur_vals)
-        self.curve_temp.setData(self.times, self.t_vals)
-        if self.times:
-            self.slider.blockSignals(True)
-            self.slider.setValue(len(self.times) - 1)
-            self.slider.blockSignals(False)
-
-    def _render_diagnosis_summary(self):
-        """Menghitung nilai puncak (peak) selama sesi rekaman dan menentukan status diagnosa akhir."""
-        if not self.v_vals:
-            self.lbl_diag_status.setText("STATUS: DATA KOSONG")
-            self.lbl_diag_desc.setText("Berkas rekaman tidak memiliki data yang dapat dianalisis.")
-            return
-
-        peak_v = max(self.v_vals)
-        peak_a = max(self.a_vals)
-        peak_cur = max(self.cur_vals)
-        peak_temp = max(self.t_vals)
-
-        # Menggunakan ambang batas yang sama seperti diagnosa live pada dashboard utama
-        if peak_v > 0.25 or peak_temp > 50.0:
-            status, col = "BAHAYA (CRITICAL)", COL_BAD
-            desc = "Terdeteksi puncak getaran dan/atau suhu yang melampaui ambang batas kritis selama sesi rekaman ini."
-        elif peak_v > 0.18 or peak_temp > 42.0:
-            status, col = "WASPADA (WARNING)", COL_WARN
-            desc = "Terdeteksi indikasi awal ketidakseimbangan massa atau degradasi mekanis selama sesi rekaman ini."
-        else:
-            status, col = "NORMAL", COL_OK
-            desc = "Seluruh parameter selama sesi rekaman ini berada di bawah ambang batas deviasi kritis."
-
-        self.lbl_diag_status.setText(f"STATUS HASIL DETEKSI: {status}")
-        self.lbl_diag_status.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {col};")
-        self.box_diagnosis.setStyleSheet(f"background-color: {COL_PANEL_DARK}; border: 2px solid {col}; border-radius: 6px;")
-        self.lbl_diag_desc.setText(desc)
-        self.lbl_diag_peak.setText(
-            f"Nilai puncak selama rekaman -> Vib: {peak_v:.2f} G | Snd: {peak_a:.1f} dB | "
-            f"Cur: {peak_cur:.2f} A | Tmp: {peak_temp:.1f} °C"
-        )
-
-    def _render_frame(self, idx):
-        """Menggambar 1 frame animasi (jendela 50 titik terakhir) untuk efek 'muter ulang'."""
-        start = max(0, idx - 49)
-        t = self.times[start:idx + 1]
-        v = self.v_vals[start:idx + 1]
-        a = self.a_vals[start:idx + 1]
-        c = self.cur_vals[start:idx + 1]
-        tp = self.t_vals[start:idx + 1]
-
-        self.curve_v.setData(t, v)
-        self.curve_a.setData(t, a)
-        self.curve_cur.setData(t, c)
-        self.curve_temp.setData(t, tp)
-
-        self.slider.blockSignals(True)
-        self.slider.setValue(idx)
-        self.slider.blockSignals(False)
-        self.lbl_pos.setText(f"{idx + 1} / {len(self.times)}")
-
-    def _step(self):
-        if self.play_index >= len(self.times):
-            self.timer.stop()
-            self.btn_play_pause.setText("▶ PLAY")
-            return
-        self._render_frame(self.play_index)
-        self.play_index += 1
-
-    def _toggle_play(self):
-        if not self.times:
-            return
-        if self.timer.isActive():
-            self.timer.stop()
-            self.btn_play_pause.setText("▶ PLAY")
-        else:
-            # Jika sudah di akhir data, otomatis ulang dari awal
-            if self.play_index >= len(self.times):
-                self.play_index = 0
-            interval_ms = max(20, int(200 / self.play_speed))
-            self.timer.start(interval_ms)
-            self.btn_play_pause.setText("⏸ PAUSE")
-
-    def _change_speed(self, combo_idx):
-        mapping = {0: 0.5, 1: 1.0, 2: 2.0, 3: 4.0}
-        self.play_speed = mapping.get(combo_idx, 1.0)
-        if self.timer.isActive():
-            self.timer.start(max(20, int(200 / self.play_speed)))
-
-    def _seek(self, value):
-        self.play_index = value
-        self._render_frame(value)
-
-    def closeEvent(self, event):
-        # Pastikan timer animasi berhenti total saat panel ditutup, agar tidak berjalan di latar belakang
-        self.timer.stop()
-        super().closeEvent(event)
-
-
 class Dashboard(QWidget):
     def __init__(self):
         super().__init__()
@@ -314,6 +86,9 @@ class Dashboard(QWidget):
         self.data_len = 50
         self.time_buffer = deque(maxlen=self.data_len)
         self.v_buffer = deque(maxlen=self.data_len)
+        self.vx_buffer = deque(maxlen=self.data_len)  # Getaran sumbu X
+        self.vy_buffer = deque(maxlen=self.data_len)  # Getaran sumbu Y
+        self.vz_buffer = deque(maxlen=self.data_len)  # Getaran sumbu Z
         self.a_buffer = deque(maxlen=self.data_len)
         self.cur_buffer = deque(maxlen=self.data_len)
         self.temp_buffer = deque(maxlen=self.data_len)
@@ -323,8 +98,23 @@ class Dashboard(QWidget):
         self.last_processed_tick = 0
         self.last_raw_line = ""
 
+        # State playback halaman detail rekaman (Logs & Saves -> buka rekaman,
+        # ditampilkan INLINE di dashboard yang sama, bukan window terpisah)
+        self.logdet_times = []
+        self.logdet_v_vals = []
+        self.logdet_a_vals = []
+        self.logdet_cur_vals = []
+        self.logdet_t_vals = []
+        self.logdet_play_index = 0
+        self.logdet_play_speed = 1.0
+        self.logdet_timer = QTimer(self)
+        self.logdet_timer.timeout.connect(self._logdet_step)
+
         # Variabel Penampung Nilai Sensor Terkini (Awalnya kosong sebelum ada data serial masuk)
         self.current_v = None
+        self.current_vx = None
+        self.current_vy = None
+        self.current_vz = None
         self.current_a = None
         self.current_cur = None
         self.current_temp = None
@@ -360,9 +150,21 @@ class Dashboard(QWidget):
         header_frame.setStyleSheet(f"background-color: {COL_HEADER_BG}; border-radius: 4px;")
         header_frame.setLayout(header)
 
-        self.lbl_machine_name = QLabel("- Pilih Mesin Target -")
-        self.lbl_machine_name.setStyleSheet("font-size: 13px; font-weight: bold; color: #1c1e22; padding: 4px 6px;")
-        header.addWidget(self.lbl_machine_name, 3)
+        self.machine_combo = QComboBox()
+        self.machine_combo.addItems([
+            "- Pilih Mesin Target -",
+            "Blower Industri UMKM",
+            "Motor Induksi Pompa Air",
+            "Kompresor Production",
+            "Mesin Blender"
+        ])
+        self.machine_combo.setFixedHeight(24)
+        self.machine_combo.setStyleSheet(
+            "background-color: rgba(0,0,0,0.15); color: #ffffff; font-size: 11px; "
+            "font-weight: bold; padding: 2px 4px; border: 1px solid #1c1e22; border-radius: 3px;"
+        )
+        self.machine_combo.currentTextChanged.connect(self._on_machine_changed)
+        header.addWidget(self.machine_combo, 3)
 
         header.addStretch(1)
 
@@ -402,6 +204,7 @@ class Dashboard(QWidget):
         self.stack.addWidget(self._page_recording()) # Index 1
         self.stack.addWidget(self._page_processed()) # Index 2
         self.stack.addWidget(self._page_summary())   # Index 3
+        self.stack.addWidget(self._page_log_detail()) # Index 4 (dibuka dari Logs & Saves, inline, bukan window baru)
         stack_row.addWidget(self.stack, 1)
 
         self.btn_nav_next = QPushButton("›")
@@ -451,71 +254,85 @@ class Dashboard(QWidget):
 
     def _change_page(self, idx):
         self.stack.setCurrentIndex(idx)
+        # Halaman detail log (index 4) dianggap masih "bagian" dari tab
+        # Logs & Saves (index 1) buat keperluan highlight tombol menu bawah,
+        # karena cuma bisa dibuka dari sana.
+        highlight_idx = 1 if idx == 4 else idx
         for i, btn in enumerate(self.menu_buttons):
-            btn.setStyleSheet(self._menu_style(i == idx))
+            btn.setStyleSheet(self._menu_style(i == highlight_idx))
 
     # ===================== HALAMAN 1: RAW READING (4 KOTAK GRAFIK INDIVIDU) =====================
     def _page_raw(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(1)
 
-        top_bar = QHBoxLayout()
-        lbl_target_mesin = QLabel("Target Mesin:")
-        lbl_target_mesin.setStyleSheet("font-size: 12px; font-weight: bold; color: #ffffff;")
-        top_bar.addWidget(lbl_target_mesin)
-        self.machine_combo = QComboBox()
-        self.machine_combo.addItems([
-            "- Pilih Mesin Target -",
-            "Blower Industri UMKM", 
-            "Motor Induksi Pompa Air", 
-            "Kompresor Production",
-            "Mesin Blender"
-        ])
-        self.machine_combo.setFixedHeight(30)
-        self.machine_combo.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 12px; padding: 4px;")
-        self.machine_combo.currentTextChanged.connect(self._on_machine_changed)
-        top_bar.addWidget(self.machine_combo, 1)
-        layout.addLayout(top_bar)
+        # Catatan: dropdown "Pilih Mesin Target" sudah dipindah ke bar kuning
+        # (header) di atas, jadi baris terpisah di sini dihapus supaya ruang
+        # vertikal halaman ini sepenuhnya dipakai buat grafik.
 
         main_raw = QHBoxLayout()
+        main_raw.setSpacing(2)
         
         # Grid layout untuk membagi porsi layar menjadi 4 bagian grafik sub-plot dedicated
         layout_grafik_grid = QGridLayout()
         layout_grafik_grid.setSpacing(2)
+        layout_grafik_grid.setContentsMargins(0, 0, 0, 0)
         
         pg.setConfigOptions(antialias=True)
-        
+
+        def _tidy_plot(plot_widget, title):
+            """Rapikan tampilan grafik: font sumbu lebih besar & jarak antar
+            angka sumbu diperlebar supaya gak numpuk/bertabrakan di layar
+            kecil 480x320. Dipakai sama untuk keempat grafik biar konsisten."""
+            axis_font = QFont("Arial", 8)
+            plot_item = plot_widget.getPlotItem()
+            for axis_name in ("left", "bottom"):
+                axis = plot_item.getAxis(axis_name)
+                axis.setStyle(tickFont=axis_font, tickTextOffset=6, autoExpandTextSpace=True)
+                axis.setTextPen(pg.mkPen('#dddddd'))
+            # Batasi jumlah angka yang muncul di sumbu X (waktu) supaya gak
+            # numpuk berdempetan — dipperlebar lagi jadi 1 angka tiap 15 tick
+            # (dari sebelumnya tiap 10), karena grafik makin besar tapi
+            # jumlah titik data (50) tetap sama.
+            plot_item.getAxis("bottom").setTickSpacing(major=15, minor=15)
+            plot_item.getAxis("left").setWidth(40)
+            plot_widget.setTitle(title, size="10pt")
+
         # 1. Grafik Getaran (Vibration)
         self.graph_v = pg.PlotWidget(title="Vibration (G)")
         self.graph_v.setBackground(COL_PANEL_DARK)
-        self.graph_v.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_v = self.graph_v.plot(pen=pg.mkPen('#ff4d4d', width=1.5))
+        self.graph_v.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_v = self.graph_v.plot(pen=pg.mkPen('#ff4d4d', width=2))
+        _tidy_plot(self.graph_v, "Vibration (G)")
         layout_grafik_grid.addWidget(self.graph_v, 0, 0)
         
         # 2. Grafik Suara (Sound)
         self.graph_a = pg.PlotWidget(title="Sound (dB)")
         self.graph_a.setBackground(COL_PANEL_DARK)
-        self.graph_a.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_a = self.graph_a.plot(pen=pg.mkPen('#4da6ff', width=1.5))
+        self.graph_a.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_a = self.graph_a.plot(pen=pg.mkPen('#4da6ff', width=2))
+        _tidy_plot(self.graph_a, "Sound (dB)")
         layout_grafik_grid.addWidget(self.graph_a, 0, 1)
         
         # 3. Grafik Arus Listrik (Current)
         self.graph_cur = pg.PlotWidget(title="Current (A)")
         self.graph_cur.setBackground(COL_PANEL_DARK)
-        self.graph_cur.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_cur = self.graph_cur.plot(pen=pg.mkPen('#ffeb3b', width=1.5))
+        self.graph_cur.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_cur = self.graph_cur.plot(pen=pg.mkPen('#ffeb3b', width=2))
+        _tidy_plot(self.graph_cur, "Current (A)")
         layout_grafik_grid.addWidget(self.graph_cur, 1, 0)
         
         # 4. Grafik Suhu (Temperature)
         self.graph_temp = pg.PlotWidget(title="Temp (°C)")
         self.graph_temp.setBackground(COL_PANEL_DARK)
-        self.graph_temp.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_temp = self.graph_temp.plot(pen=pg.mkPen('#e040fb', width=1.5))
+        self.graph_temp.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_temp = self.graph_temp.plot(pen=pg.mkPen('#e040fb', width=2))
+        _tidy_plot(self.graph_temp, "Temp (°C)")
         layout_grafik_grid.addWidget(self.graph_temp, 1, 1)
         
-        main_raw.addLayout(layout_grafik_grid, 7)
+        main_raw.addLayout(layout_grafik_grid, 15)
 
         # Panel Kanan Bagian Nilai Numerik Polosan
         panel_kanan = QVBoxLayout()
@@ -531,19 +348,22 @@ class Dashboard(QWidget):
         fs_lay.addWidget(self.lbl_sys_status)
         
         self.lbl_val_v = QLabel("Vib: -- G")
+        self.lbl_val_vxyz = QLabel("  (X: -- | Y: -- | Z: -- G)")  # nilai mentah sebelum diakarkan jadi Vib
         self.lbl_val_a = QLabel("Snd: -- dB")
         self.lbl_val_cur = QLabel("Cur: -- A")
         self.lbl_val_temp = QLabel("Tmp: -- °C")
         self.lbl_val_rpm = QLabel("RPM: --")
-        self.lbl_val_d2 = QLabel("D²(Mahalanobis): --")
+        self.lbl_val_d2 = QLabel("D² (Severity): --")  # dipersingkat dari "D²(Mahalanobis)" biar gak kepotong
 
-        for lbl in [self.lbl_val_v, self.lbl_val_a, self.lbl_val_cur, self.lbl_val_temp,
+        for lbl in [self.lbl_val_v, self.lbl_val_vxyz, self.lbl_val_a, self.lbl_val_cur, self.lbl_val_temp,
                     self.lbl_val_rpm, self.lbl_val_d2]:
-            lbl.setStyleSheet("font-size: 8px; color: #aaa;")
+            lbl.setStyleSheet("font-size: 11px; color: #dddddd; padding: 2px 0px;")
+            lbl.setWordWrap(True)
             fs_lay.addWidget(lbl)
+        fs_lay.setSpacing(4)
 
         panel_kanan.addWidget(frame_status)
-        main_raw.addLayout(panel_kanan, 3)
+        main_raw.addLayout(panel_kanan, 2)
 
         layout.addLayout(main_raw)
         return page
@@ -574,20 +394,24 @@ class Dashboard(QWidget):
         self.log_list = QListWidget()
         self.log_list.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 9px;")
         # Klik langsung pada file rekaman -> otomatis membuka panel baru berisi grafik hasil deteksi
-        self.log_list.itemClicked.connect(self._open_log_detail)
+        self.log_list.itemDoubleClicked.connect(self._open_log_detail)
         layout.addWidget(self.log_list)
 
         btn_lay = QHBoxLayout()
         self.btn_watch_log = QPushButton("Buka Panel Deteksi")
+        self.btn_export_excel = QPushButton("Export ke Excel")
         self.btn_delete_log = QPushButton("Hapus Rekaman")
-        
+
         self.btn_watch_log.setStyleSheet("background-color: #cfcfcf; color: #000000; font-size: 9px; height: 20px; font-weight: bold; border-radius: 3px;")
+        self.btn_export_excel.setStyleSheet("background-color: #217346; color: #ffffff; font-size: 9px; height: 20px; font-weight: bold; border-radius: 3px;")
         self.btn_delete_log.setStyleSheet("background-color: #cfcfcf; color: #000000; font-size: 9px; height: 20px; font-weight: bold; border-radius: 3px;")
-        
+
         self.btn_watch_log.clicked.connect(self._open_log_detail_from_button)
+        self.btn_export_excel.clicked.connect(self._export_selected_log_to_excel)
         self.btn_delete_log.clicked.connect(self._delete_selected_log)
-        
+
         btn_lay.addWidget(self.btn_watch_log)
+        btn_lay.addWidget(self.btn_export_excel)
         btn_lay.addWidget(self.btn_delete_log)
         layout.addLayout(btn_lay)
 
@@ -709,7 +533,216 @@ class Dashboard(QWidget):
 
         return page
 
-    # ===================== LOGIKA THREAD BACKEND BACA REAL-TIME DATA SERIAL =====================
+    # ===================== HALAMAN 5 (TERSEMBUNYI): DETAIL REKAMAN (INLINE, BUKAN WINDOW BARU) =====================
+    def _page_log_detail(self):
+        """Halaman ini cuma bisa diakses lewat 'Logs & Saves' -> klik salah satu
+        file rekaman. Ditampilkan di dalam stack yang sama (bukan QDialog/window
+        terpisah), jadi playback rekaman langsung muncul di dashboard ini juga."""
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        self.lbl_logdet_title = QLabel("HASIL DETEKSI REKAMAN: -")
+        self.lbl_logdet_title.setStyleSheet("font-size: 10px; font-weight: bold; color: #ffffff;")
+        self.lbl_logdet_title.setWordWrap(True)
+        root.addWidget(self.lbl_logdet_title)
+
+        # ===== STATUS RINGKAS: LINGKARAN WARNA + NILAI PUNCAK (GANTI KOTAK BESAR) =====
+        status_row = QHBoxLayout()
+        status_row.setSpacing(6)
+
+        self.lbl_logdet_dot = QLabel("●")
+        self.lbl_logdet_dot.setStyleSheet("font-size: 16px; color: #888888;")
+        status_row.addWidget(self.lbl_logdet_dot)
+
+        self.lbl_logdet_peak = QLabel("Nilai puncak: -")
+        self.lbl_logdet_peak.setWordWrap(True)
+        self.lbl_logdet_peak.setStyleSheet("font-size: 9px; color: #cccccc;")
+        status_row.addWidget(self.lbl_logdet_peak, 1)
+
+        root.addLayout(status_row)
+        root.addSpacing(4)  # sedikit jarak sebelum grafik, biar gak nempel status di atasnya
+
+        # ===== GRID 4 GRAFIK (GAYA SAMA DENGAN TAB RAW READING) =====
+        grid = QGridLayout()
+        grid.setSpacing(3)
+        pg.setConfigOptions(antialias=True)
+
+        self.graph_logdet_v = pg.PlotWidget(title="Vibration (G)")
+        self.graph_logdet_v.setBackground(COL_PANEL_DARK)
+        self.graph_logdet_v.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_logdet_v = self.graph_logdet_v.plot(pen=pg.mkPen('#ff4d4d', width=1.5))
+        grid.addWidget(self.graph_logdet_v, 0, 0)
+
+        self.graph_logdet_a = pg.PlotWidget(title="Sound (dB)")
+        self.graph_logdet_a.setBackground(COL_PANEL_DARK)
+        self.graph_logdet_a.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_logdet_a = self.graph_logdet_a.plot(pen=pg.mkPen('#4da6ff', width=1.5))
+        grid.addWidget(self.graph_logdet_a, 0, 1)
+
+        self.graph_logdet_cur = pg.PlotWidget(title="Current (A)")
+        self.graph_logdet_cur.setBackground(COL_PANEL_DARK)
+        self.graph_logdet_cur.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_logdet_cur = self.graph_logdet_cur.plot(pen=pg.mkPen('#ffeb3b', width=1.5))
+        grid.addWidget(self.graph_logdet_cur, 1, 0)
+
+        self.graph_logdet_temp = pg.PlotWidget(title="Temp (°C)")
+        self.graph_logdet_temp.setBackground(COL_PANEL_DARK)
+        self.graph_logdet_temp.showGrid(x=True, y=True, alpha=0.2)
+        self.curve_logdet_temp = self.graph_logdet_temp.plot(pen=pg.mkPen('#e040fb', width=1.5))
+        grid.addWidget(self.graph_logdet_temp, 1, 1)
+
+        # Stretch besar (20) supaya grid grafik memakai HAMPIR SELURUH ruang
+        # vertikal yang tersisa, jauh lebih besar dibanding sebelumnya waktu
+        # masih berbagi ruang sama kotak status besar.
+        root.addLayout(grid, 20)
+
+        # ===== KONTROL PLAYBACK (PLAY/PAUSE, SPEED, SLIDER, KEMBALI) =====
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(3)
+
+        self.btn_logdet_play_pause = QPushButton("▶ PLAY")
+        self.speed_logdet_combo = QComboBox()
+        self.speed_logdet_combo.addItems(["0.5x", "1x", "2x", "4x"])
+        self.speed_logdet_combo.setCurrentIndex(1)
+        self.btn_logdet_back = QPushButton("◄ KEMBALI")
+
+        self.btn_logdet_play_pause.setStyleSheet("background-color: #cfcfcf; color: #000000; font-weight: bold; font-size: 9px; height: 28px; border-radius: 4px;")
+        self.btn_logdet_back.setStyleSheet(f"background-color: {COL_BAD}; color: #ffffff; font-weight: bold; font-size: 9px; height: 28px; border-radius: 4px;")
+        self.speed_logdet_combo.setStyleSheet(f"background-color: {COL_PANEL_DARK}; color: white; font-size: 9px; padding: 2px;")
+
+        self.btn_logdet_play_pause.clicked.connect(self._logdet_toggle_play)
+        self.speed_logdet_combo.currentIndexChanged.connect(self._logdet_change_speed)
+        self.btn_logdet_back.clicked.connect(self._logdet_back)
+
+        self.slider_logdet = QSlider(Qt.Horizontal)
+        self.slider_logdet.setMinimum(0)
+        self.slider_logdet.setMaximum(0)
+        self.slider_logdet.sliderMoved.connect(self._logdet_seek)
+
+        self.lbl_logdet_pos = QLabel("0 / 0")
+        self.lbl_logdet_pos.setStyleSheet("font-size: 8px; color: #aaa;")
+
+        ctrl.addWidget(self.btn_logdet_play_pause, 2)
+        ctrl.addWidget(self.speed_logdet_combo, 1)
+        ctrl.addWidget(self.slider_logdet, 5)
+        ctrl.addWidget(self.lbl_logdet_pos, 1)
+        ctrl.addWidget(self.btn_logdet_back, 2)
+        root.addLayout(ctrl)
+
+        return page
+
+    def _logdet_back(self):
+        """Hentikan animasi playback dan kembali ke daftar Logs & Saves."""
+        self.logdet_timer.stop()
+        self._change_page(1)
+
+    def _logdet_load_csv(self, filepath):
+        """Membaca seluruh isi berkas CSV rekaman menjadi list per kolom sensor."""
+        times, v_vals, a_vals, cur_vals, t_vals = [], [], [], [], []
+        try:
+            with open(filepath, 'r') as f:
+                reader = csv.reader(f)
+                next(reader)  # lewati baris header
+                for i, row in enumerate(reader):
+                    times.append(i)
+                    v_vals.append(float(row[2]))
+                    a_vals.append(float(row[3]))
+                    cur_vals.append(float(row[4]))
+                    t_vals.append(float(row[5]))
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal membaca berkas rekaman: {e}")
+        return times, v_vals, a_vals, cur_vals, t_vals
+
+    def _logdet_render_full_overview(self):
+        """Menampilkan seluruh isi rekaman sekaligus di grafik (tampilan hasil deteksi penuh)."""
+        self.curve_logdet_v.setData(self.logdet_times, self.logdet_v_vals)
+        self.curve_logdet_a.setData(self.logdet_times, self.logdet_a_vals)
+        self.curve_logdet_cur.setData(self.logdet_times, self.logdet_cur_vals)
+        self.curve_logdet_temp.setData(self.logdet_times, self.logdet_t_vals)
+        if self.logdet_times:
+            self.slider_logdet.blockSignals(True)
+            self.slider_logdet.setValue(len(self.logdet_times) - 1)
+            self.slider_logdet.blockSignals(False)
+
+    def _logdet_render_diagnosis_summary(self):
+        """Menghitung nilai puncak (peak) selama sesi rekaman, lalu menentukan
+        warna lingkaran indikator (hijau/jingga/merah) dan teks nilai puncak."""
+        if not self.logdet_v_vals:
+            self.lbl_logdet_dot.setStyleSheet("font-size: 16px; color: #888888;")
+            self.lbl_logdet_peak.setText("Data kosong / tidak bisa dianalisis.")
+            return
+
+        peak_v = max(self.logdet_v_vals)
+        peak_a = max(self.logdet_a_vals)
+        peak_cur = max(self.logdet_cur_vals)
+        peak_temp = max(self.logdet_t_vals)
+
+        # Menggunakan ambang batas yang sama seperti diagnosa live pada dashboard utama
+        if peak_v > 0.25 or peak_temp > 50.0:
+            status, col = "BAHAYA", COL_BAD
+        elif peak_v > 0.18 or peak_temp > 42.0:
+            status, col = "WASPADA", COL_WARN
+        else:
+            status, col = "NORMAL", COL_OK
+
+        self.lbl_logdet_dot.setStyleSheet(f"font-size: 16px; color: {col};")
+        self.lbl_logdet_peak.setText(
+            f"{status} — Puncak: Vib {peak_v:.2f} G | Snd {peak_a:.1f} dB | "
+            f"Cur {peak_cur:.2f} A | Tmp {peak_temp:.1f} °C"
+        )
+
+    def _logdet_render_frame(self, idx):
+        """Menggambar 1 frame animasi (jendela 50 titik terakhir) untuk efek 'muter ulang'."""
+        start = max(0, idx - 49)
+        t = self.logdet_times[start:idx + 1]
+        v = self.logdet_v_vals[start:idx + 1]
+        a = self.logdet_a_vals[start:idx + 1]
+        c = self.logdet_cur_vals[start:idx + 1]
+        tp = self.logdet_t_vals[start:idx + 1]
+
+        self.curve_logdet_v.setData(t, v)
+        self.curve_logdet_a.setData(t, a)
+        self.curve_logdet_cur.setData(t, c)
+        self.curve_logdet_temp.setData(t, tp)
+
+        self.slider_logdet.blockSignals(True)
+        self.slider_logdet.setValue(idx)
+        self.slider_logdet.blockSignals(False)
+        self.lbl_logdet_pos.setText(f"{idx + 1} / {len(self.logdet_times)}")
+
+    def _logdet_step(self):
+        if self.logdet_play_index >= len(self.logdet_times):
+            self.logdet_timer.stop()
+            self.btn_logdet_play_pause.setText("▶ PLAY")
+            return
+        self._logdet_render_frame(self.logdet_play_index)
+        self.logdet_play_index += 1
+
+    def _logdet_toggle_play(self):
+        if not self.logdet_times:
+            return
+        if self.logdet_timer.isActive():
+            self.logdet_timer.stop()
+            self.btn_logdet_play_pause.setText("▶ PLAY")
+        else:
+            # Jika sudah di akhir data, otomatis ulang dari awal
+            if self.logdet_play_index >= len(self.logdet_times):
+                self.logdet_play_index = 0
+            interval_ms = max(20, int(200 / self.logdet_play_speed))
+            self.logdet_timer.start(interval_ms)
+            self.btn_logdet_play_pause.setText("⏸ PAUSE")
+
+    def _logdet_change_speed(self, combo_idx):
+        mapping = {0: 0.5, 1: 1.0, 2: 2.0, 3: 4.0}
+        self.logdet_play_speed = mapping.get(combo_idx, 1.0)
+        if self.logdet_timer.isActive():
+            self.logdet_timer.start(max(20, int(200 / self.logdet_play_speed)))
+
+    def _logdet_seek(self, value):
+        self.logdet_play_index = value
+        self._logdet_render_frame(value)
     def _init_serial_connection(self):
         if serial is not None:
             # Membuka thread background baru khusus membaca UART secara non-blocking
@@ -719,15 +752,16 @@ class Dashboard(QWidget):
             print("Library pyserial tidak terinstal atau tidak terdeteksi pada Python interpreter.")
 
     def _resolve_serial_port(self):
-        """Cari port serial yang tepat untuk ESP32. Coba SERIAL_PORT dulu,
-        kalau tidak ada di daftar port yang terdeteksi sistem, cari otomatis
-        port dengan deskripsi chip USB-Serial yang umum dipakai board ESP32
-        (CH340/CH343/CP210x/FTDI). Ini supaya dashboard tetap bisa konek
-        walaupun nomor COM/tty berubah-ubah setiap kali kabel dicolok ulang."""
+        """Cari port serial yang tepat untuk ESP32.
+        Kalau tidak ada port yang cocok, kembalikan None supaya dashboard
+        tidak terus mencoba membuka port yang tidak ada."""
         try:
             ports = list(serial.tools.list_ports.comports())
         except Exception:
             ports = []
+
+        if not ports:
+            return None
 
         available = [p.device for p in ports]
         if SERIAL_PORT in available:
@@ -738,15 +772,18 @@ class Dashboard(QWidget):
             if any(hint in desc for hint in ESP32_USB_HINTS):
                 return p.device
 
-        # Tidak ketemu kandidat lain -> tetap coba SERIAL_PORT default
-        # (biar pesan error yang muncul jelas menyebut port itu)
-        return SERIAL_PORT
+        return None
 
     def _read_serial_worker(self):
         while True:
             try:
                 if self.ser is None or not self.ser.is_open:
                     port_to_use = self._resolve_serial_port()
+                    if not port_to_use:
+                        self.serial_connected = False
+                        time.sleep(2)
+                        continue
+
                     self.ser = serial.Serial(port_to_use, BAUD_RATE, timeout=1)
                     self.serial_connected = True
 
@@ -773,11 +810,18 @@ class Dashboard(QWidget):
                 self.last_raw_line = line
 
                 # Format paket sesuai Transmitter_SendResult() di firmware:
-                # {"rms_v":.., "rms_a":.., "cur":.., "temp":.., "rpm":.., "d2":.., "status":".."}
+                # {"rms_v":.., "rms_a":.., "cur":.., "temp":.., "vib_x":.., "vib_y":.., "vib_z":..,
+                #  "rpm":.., "d2":.., "status":".."}
                 self.current_v = float(data.get("rms_v", 0.0))
                 self.current_a = float(data.get("rms_a", 0.0))
                 self.current_cur = float(data.get("cur", 0.0))
                 self.current_temp = float(data.get("temp", 0.0))
+                # vib_x/y/z dipakai KHUSUS untuk tampilan grafik per-sumbu;
+                # kalau firmware lama belum kirim field ini, default 0.0 saja
+                # (bukan error) supaya tetap kompatibel dengan firmware lama.
+                self.current_vx = float(data.get("vib_x", 0.0))
+                self.current_vy = float(data.get("vib_y", 0.0))
+                self.current_vz = float(data.get("vib_z", 0.0))
                 self.current_rpm = float(data.get("rpm", 0.0))
                 self.current_d2 = float(data.get("d2", 0.0))
                 self.current_status_device = data.get("status", "")
@@ -786,6 +830,9 @@ class Dashboard(QWidget):
                 self.tick += 1
                 self.time_buffer.append(self.tick)
                 self.v_buffer.append(self.current_v)
+                self.vx_buffer.append(self.current_vx)
+                self.vy_buffer.append(self.current_vy)
+                self.vz_buffer.append(self.current_vz)
                 self.a_buffer.append(self.current_a)
                 self.cur_buffer.append(self.current_cur)
                 self.temp_buffer.append(self.current_temp)
@@ -807,18 +854,16 @@ class Dashboard(QWidget):
                         round(elapsed, 3),
                         self.machine_combo.currentText(),
                         self.current_v, self.current_a, self.current_cur, self.current_temp,
+                        self.current_vx, self.current_vy, self.current_vz,
                         self.current_rpm, self.current_d2, self.current_status_device
                     ])
                     self.csv_file.flush()
             except Exception as e:
-                print(f"[SERIAL] gagal tersambung: {e}")
+                print(f"[SERIAL] status: {e}")
                 self.serial_connected = False
                 self.ser = None
-                # Reset data ke kondisi kosong jika kabel USB terputus
                 self.current_v = self.current_a = self.current_cur = self.current_temp = None
-                # Tunggu sebentar sebelum mencoba reconnect lagi, biar tidak
-                # spam percobaan koneksi ratusan kali per detik saat kabel lepas
-                time.sleep(1.5)
+                time.sleep(2)
 
     # ===================== EVALUASI DIAGNOSA MESIN (DIPAKAI TAB SUMMARY) =====================
     def _evaluate_diagnosis(self, v, temp, device_status=""):
@@ -888,7 +933,10 @@ class Dashboard(QWidget):
         self.lbl_sys_status.setStyleSheet(f"font-size: 9px; font-weight: bold; color: {status_col};")
 
     def _on_machine_changed(self, text):
-        self.lbl_machine_name.setText(text)
+        # Dropdown-nya sekarang langsung nampilin nama mesin yang dipilih
+        # (combo box-nya sendiri ada di header), jadi gak perlu lagi label
+        # terpisah buat mengulang teks yang sama.
+        pass
 
     def _reset_session(self):
         """Tombol RESET di header: nge-reset statistik & log kejadian anomali sesi
@@ -954,13 +1002,17 @@ class Dashboard(QWidget):
 
             # Sinkronisasi teks angka di tab Raw Reading
             self.lbl_val_v.setText(f"Vib: {self.current_v:.2f} G")
+            if self.current_vx is not None:
+                self.lbl_val_vxyz.setText(
+                    f"  (X: {self.current_vx:.2f} | Y: {self.current_vy:.2f} | Z: {self.current_vz:.2f} G)"
+                )
             self.lbl_val_a.setText(f"Snd: {self.current_a:.1f} dB")
             self.lbl_val_cur.setText(f"Cur: {self.current_cur:.2f} A")
             self.lbl_val_temp.setText(f"Tmp: {self.current_temp:.1f} °C")
             if self.current_rpm is not None:
                 self.lbl_val_rpm.setText(f"RPM: {self.current_rpm:.0f}")
             if self.current_d2 is not None:
-                self.lbl_val_d2.setText(f"D²(Mahalanobis): {self.current_d2:.2f}")
+                self.lbl_val_d2.setText(f"D² (Severity): {self.current_d2:.2f}")
 
             rpm_txt = f"{self.current_rpm:.0f}" if self.current_rpm is not None else "--"
             d2_txt = f"{self.current_d2:.2f}" if self.current_d2 is not None else "--"
@@ -1037,7 +1089,7 @@ class Dashboard(QWidget):
             try:
                 self.csv_file = open(filename, 'w', newline='')
                 self.csv_writer = csv.writer(self.csv_file)
-                self.csv_writer.writerow(['timestamp', 'machine_type', 'rms_v', 'rms_a', 'current', 'temp', 'rpm', 'mahalanobis_d2', 'status'])
+                self.csv_writer.writerow(['timestamp', 'machine_type', 'rms_v', 'rms_a', 'current', 'temp', 'vib_x', 'vib_y', 'vib_z', 'rpm', 'mahalanobis_d2', 'status'])
                 self.record_start_time = time.perf_counter()
                 self.last_csv_time = 0.0
                 self.recording = True
@@ -1066,14 +1118,38 @@ class Dashboard(QWidget):
                     self.log_list.addItem(file)
 
     def _open_log_detail(self, item):
-        """Dipanggil saat sebuah file rekaman di klik pada daftar -> membuka panel baru (popup)
-        yang menampilkan grafik hasil deteksi (Vibration/Sound/Current/Temp) beserta diagnosanya."""
+        """Dipanggil saat sebuah file rekaman di klik pada daftar -> menampilkan
+        grafik hasil deteksi (Vibration/Sound/Current/Temp) beserta diagnosanya
+        LANGSUNG di dashboard yang sama (halaman inline), bukan window/tab baru."""
         if item is None:
             return
         filename = item.text()
         filepath = os.path.join(LOG_DIR, filename)
-        dialog = LogDetailDialog(filepath, filename, parent=self)
-        dialog.exec_()
+
+        self.logdet_timer.stop()
+        self.logdet_play_index = 0
+        self.btn_logdet_play_pause.setText("▶ PLAY")
+        self.lbl_logdet_title.setText(f"HASIL DETEKSI REKAMAN: {filename}")
+
+        (self.logdet_times, self.logdet_v_vals, self.logdet_a_vals,
+         self.logdet_cur_vals, self.logdet_t_vals) = self._logdet_load_csv(filepath)
+
+        self.slider_logdet.setMaximum(max(0, len(self.logdet_times) - 1))
+        self.slider_logdet.setValue(0)
+        if self.logdet_times:
+            # Tampilkan frame PALING AWAL saja (bukan seluruh data langsung),
+            # jadi jelas kelihatan playback belum mulai/belum selesai — user
+            # harus tekan PLAY dulu buat menjalankannya.
+            self._logdet_render_frame(0)
+        else:
+            self.curve_logdet_v.clear()
+            self.curve_logdet_a.clear()
+            self.curve_logdet_cur.clear()
+            self.curve_logdet_temp.clear()
+            self.lbl_logdet_pos.setText("0 / 0")
+        self._logdet_render_diagnosis_summary()
+
+        self._change_page(4)
 
     def _open_log_detail_from_button(self):
         """Tombol cadangan 'Buka Panel Deteksi' - memakai file yang sedang terpilih di daftar."""
@@ -1105,6 +1181,101 @@ class Dashboard(QWidget):
                 self.lbl_rec_status.setStyleSheet(f"font-size: 8px; color: {COL_BAD};")
             except Exception as e:
                 print(f"Gagal menghapus file: {e}")
+
+    def _export_selected_log_to_excel(self):
+        """Mengubah berkas rekaman .csv yang dipilih di daftar Logs & Saves
+        menjadi berkas Excel (.xlsx) yang rapi: header ditebalkan, kolom status
+        diwarnai otomatis (hijau/jingga/merah), dan lebar kolom disesuaikan."""
+        current_item = self.log_list.currentItem()
+        if not current_item:
+            QMessageBox.information(self, "Pilih Rekaman Dulu",
+                                     "Klik salah satu berkas rekaman di daftar dulu sebelum export.")
+            return
+
+        if openpyxl is None:
+            QMessageBox.critical(
+                self, "Library Belum Terinstall",
+                "Fitur export ke Excel butuh library 'openpyxl'.\n\n"
+                "Install dulu lewat terminal/command prompt:\n\n"
+                "    pip install openpyxl\n\n"
+                "Setelah itu, jalankan ulang dashboard ini."
+            )
+            return
+
+        filename = current_item.text()
+        csv_path = os.path.join(LOG_DIR, filename)
+        xlsx_path = os.path.splitext(csv_path)[0] + ".xlsx"
+
+        try:
+            with open(csv_path, 'r') as f:
+                rows = list(csv.reader(f))
+
+            if not rows:
+                QMessageBox.warning(self, "Berkas Kosong", "Berkas rekaman ini tidak memiliki data.")
+                return
+
+            header, data_rows = rows[0], rows[1:]
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Data Sensor ESP32"
+
+            # ===== Tulis header (baris 1), ditebalkan + latar biru tua =====
+            header_fill = PatternFill(start_color="1c1e22", end_color="1c1e22", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+            ws.append(header)
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+
+            # Cari index kolom 'status' (kalau ada) untuk pewarnaan baris otomatis
+            status_col_idx = None
+            for i, col_name in enumerate(header):
+                if col_name.strip().lower() == "status":
+                    status_col_idx = i
+                    break
+
+            status_fill = {
+                "normal":  PatternFill(start_color="c6efce", end_color="c6efce", fill_type="solid"),  # hijau muda
+                "waspada": PatternFill(start_color="ffeb9c", end_color="ffeb9c", fill_type="solid"),   # jingga muda
+                "bahaya":  PatternFill(start_color="ffc7ce", end_color="ffc7ce", fill_type="solid"),   # merah muda
+            }
+
+            # ===== Tulis data baris demi baris (coba konversi angka, biar Excel
+            # membaca kolom sensor sebagai NUMBER, bukan teks) =====
+            for row in data_rows:
+                converted_row = []
+                for value in row:
+                    try:
+                        converted_row.append(float(value))
+                    except (ValueError, TypeError):
+                        converted_row.append(value)  # kolom teks (mis. nama mesin, status) dibiarkan apa adanya
+                ws.append(converted_row)
+
+                if status_col_idx is not None:
+                    status_val = str(row[status_col_idx]).strip().lower()
+                    fill = status_fill.get(status_val)
+                    if fill:
+                        ws.cell(row=ws.max_row, column=status_col_idx + 1).fill = fill
+
+            # ===== Lebar kolom otomatis menyesuaikan isi terpanjang =====
+            for col_cells in ws.columns:
+                max_len = max((len(str(c.value)) for c in col_cells if c.value is not None), default=8)
+                ws.column_dimensions[col_cells[0].column_letter].width = max_len + 2
+
+            ws.freeze_panes = "A2"  # baris header tetap kelihatan pas di-scroll ke bawah
+
+            wb.save(xlsx_path)
+
+            QMessageBox.information(
+                self, "Export Berhasil",
+                f"Data berhasil diexport ke:\n{xlsx_path}\n\n"
+                f"Total {len(data_rows)} baris data, siap dibuka di Microsoft Excel."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Gagal", f"Terjadi kesalahan saat export ke Excel:\n{e}")
+
 
     def keyPressEvent(self, event):
         # Tekan tombol 'ESC' pada keyboard eksternal untuk menutup paksa aplikasi full-screen
