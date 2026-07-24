@@ -60,12 +60,15 @@ void TaskDriverArus(void *pvParameters) {
     }
     dcEstimate /= 32.0f;
 
-    float prevRawSample      = dcEstimate; // inisialisasi ke DC aktual, bukan asumsi 2048
-    float prevFilteredSample = 0.0f;
-    const float alpha = 0.996f;
-    // Penjelasan alpha=0.996 pada 10kHz:
-    //   dt = 100µs, RC = alpha*dt/(1-alpha) = 0.996*0.0001/0.004 = 0.0249s
-    //   fc = 1/(2π*RC) = 6.4Hz → buang DC dan drift lambat, lewatkan 50Hz sinyal arus
+    //GANTI TOTAL dari filter selisih-lalu-integrasi (rentan ngamplifikasi
+    // drift lambat sampai ~249x, lihat analisis data motor-mati 24 Jul) jadi
+    // "pelacak titik-nol" yang jalan terus-menerus: tiap sample, dcBaseline
+    // digeser SEDIKIT ke arah rawSample terkini. Sangat lambat (beta kecil)
+    // supaya dia BUTA terhadap sinyal AC 50Hz (1 siklus cuma 20ms, jauh lebih
+    // cepat dari kecepatan tracking-nya), tapi tetap ngikutin drift termal
+    // yang berlangsung dalam hitungan menit.
+    float dcBaseline = dcEstimate; // mulai dari estimasi 32-sample awal, sama seperti sebelumnya
+    const float dcTrackBeta = 3.2e-5f; // cutoff ~0.05Hz (time constant ~20 detik)
 
     // FIX 3: Warm-up phase — jalankan HPF dulu tanpa akumulasi RMS
     // sampai filter converge ke baseline yang benar.
@@ -73,9 +76,7 @@ void TaskDriverArus(void *pvParameters) {
     // dan menghasilkan RMS palsu yang terlalu tinggi di window pertama.
     for (int i = 0; i < ARUS_WARMUP_SAMPLES; i++) {
         float rawSample = (float)analogRead(PIN_SCT_ADC);
-        float filtered  = alpha * (prevFilteredSample + rawSample - prevRawSample);
-        prevRawSample      = rawSample;
-        prevFilteredSample = filtered;
+        dcBaseline += dcTrackBeta * (rawSample - dcBaseline);
         delayMicroseconds(100);
     }
 
@@ -86,15 +87,14 @@ void TaskDriverArus(void *pvParameters) {
         double sumSquared = 0.0;
 
         for (int i = 0; i < ARUS_RMS_SAMPLE_COUNT; i++) {
-            float rawSample = (float)analogRead(PIN_SCT_ADC);
+           float rawSample = (float)analogRead(PIN_SCT_ADC);
 
-            // High-pass filter: buang komponen DC (bias tegangan) dan drift lambat.
-            // Yang tersisa hanya komponen AC sinusoidal dari arus motor.
-            float filteredSample = alpha * (prevFilteredSample + rawSample - prevRawSample);
-            prevRawSample        = rawSample;
-            prevFilteredSample   = filteredSample;
+            // Update titik-nol SEDIKIT tiap sample (lacak drift real-time),
+            // lalu buang dari raw sample -- sisanya murni komponen AC.
+            dcBaseline += dcTrackBeta * (rawSample - dcBaseline);
+            float acSample = rawSample - dcBaseline;
 
-            sumSquared += (double)(filteredSample * filteredSample);
+            sumSquared += (double)(acSample * acSample);
 
         // FIX: delayMicroseconds() busy-wait murni -- Core 1 diblokir total
         // tanpa context-switch. TaskDriverArus (prioritas 2) berbagi Core 1
