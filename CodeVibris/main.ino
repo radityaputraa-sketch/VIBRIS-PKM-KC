@@ -103,8 +103,14 @@ void loop() {
         } else if (cmd == 'F') {   // 'F' = ground truth bearing fault disimulasikan
             strncpy(groundTruthLabel, "BEARING_FAULT", sizeof(groundTruthLabel) - 1);
             Serial.println(F("[TEST] Ground truth: BEARING_FAULT"));
+        } else if (cmd == 'X') {   // 'X' = Raspi minta ESP32 REBOOT PENUH
+            Serial.println(F("[CMD] Reboot ESP32 diminta dari Raspi..."));
+            delay(150);  // beri waktu buffer Serial TX selesai terkirim SEBELUM restart
+            ESP.restart();
         }
     }
+
+
     if (!fresh && stillWarmingUp) {
         strncpy(result.status_label, "Warming", sizeof(result.status_label) - 1);
         result.status_label[sizeof(result.status_label) - 1] = '\0';
